@@ -84,7 +84,7 @@ def main():
         run(f"echo '' | ncat {domain} {port} -w 3", f"Ncat Banner Grab on Port {port}")
 
     # 6. Gobuster (faster than dirb)
-    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40", "Directory Brute-Force (Gobuster)")
+    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 -b 403", "Directory Brute-Force (Gobuster)")
 
     # 7. Nuclei vuln scan
     run(f"nuclei -u {target} -severity high,critical -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
