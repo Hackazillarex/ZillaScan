@@ -7,7 +7,6 @@
 #cd theHarvester
 #python3 -m pip install -r requirements.txt
 #sudo ln -s $(pwd)/theHarvester.py /usr/local/bin/theHarvester
-#Any errors that you get, please review them, you might be missing respositories/files that I already had.
 
 
 
@@ -35,15 +34,17 @@ def run(cmd, desc):
     print(f"\n[+] {desc}\n{'='*60}")
     result = subprocess.run(cmd, shell=True, capture_output=True)
     
-    # Decode stdout safely, replacing undecodable bytes with �
     output = result.stdout.decode('utf-8', errors='replace').strip()
     if output:
         print(output)
-    
-    # Decode stderr safely, ignoring timeout errors
+
     error = result.stderr.decode('utf-8', errors='replace').strip()
-    if error and "Ncat: TIMEOUT." not in error:
+    
+    # Don't treat subfinder's normal logs as an error
+    if "subfinder" not in cmd and error and "Ncat: TIMEOUT." not in error:
         print(f"[!] Error:\n{error}")
+    elif "subfinder" in cmd and error:
+        print(error)  # Just print subfinder logs normally
 
 def extract_domain(url):
     parsed = urlparse(url)
@@ -69,7 +70,7 @@ def main():
 
 
     # 2. Subdomain enum: subfinder
-    run(f"subfinder -d {domain} -silent -o {output_dir}/subdomains.txt", "Subdomain Enumeration (Subfinder)")
+    run(f"subfinder -d {domain}  -o {output_dir}/subdomains.txt", "Subdomain Enumeration (Subfinder)")
 
     # 3. theHarvester
     run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun -f {output_dir}/harvester.html", "Email/Host Recon (theHarvester)")
@@ -92,7 +93,7 @@ def main():
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3 --output-dir={output_dir}/sqlmap", "SQL Injection Discovery (SQLMap)")
 
     # 9. WPScan (if WordPress is used)
-    run(f"wpscan --url {target} --enumerate u,vp,vt --api-token **YOURAPIHERE** -f json -o {output_dir}/wpscan.json", "WordPress Vulnerability Scan (WPScan)")
+    run(f"wpscan --url {target} --enumerate u,vp,vt --api-token [YOURAPITOKEN] -f json -o {output_dir}/wpscan.json", "WordPress Vulnerability Scan (WPScan)")
 
     # 10. WhatWeb tech fingerprinting
     run(f"whatweb {target} --log-verbose={output_dir}/whatweb.txt", "Web Fingerprinting (WhatWeb)")
