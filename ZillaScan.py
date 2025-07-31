@@ -33,11 +33,17 @@ __________.__.__  .__           _________
 # Improved runner with cleaner output
 def run(cmd, desc):
     print(f"\n[+] {desc}\n{'='*60}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if result.stdout.strip():
-        print(result.stdout)
-    if result.stderr.strip() and "Ncat: TIMEOUT." not in result.stderr:
-        print(f"[!] Error:\n{result.stderr.strip()}")
+    result = subprocess.run(cmd, shell=True, capture_output=True)
+    
+    # Decode stdout safely, replacing undecodable bytes with �
+    output = result.stdout.decode('utf-8', errors='replace').strip()
+    if output:
+        print(output)
+    
+    # Decode stderr safely, ignoring timeout errors
+    error = result.stderr.decode('utf-8', errors='replace').strip()
+    if error and "Ncat: TIMEOUT." not in error:
+        print(f"[!] Error:\n{error}")
 
 def extract_domain(url):
     parsed = urlparse(url)
