@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-#sudo apt install nmap ncat dirb sqlmap -y
-#go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
-#gem install wpscan
-#sudo apt remove theharvester -y
-#git clone https://github.com/laramies/theHarvester.git
-#cd theHarvester
-#python3 -m pip install -r requirements.txt
-#sudo ln -s $(pwd)/theHarvester.py /usr/local/bin/theHarvester
+
 
 
 
