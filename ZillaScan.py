@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-
+#sudo apt install nmap ncat dirb sqlmap -y
+#go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
+#gem install wpscan
+#sudo apt remove theharvester -y
+#git clone https://github.com/laramies/theHarvester.git
+#cd theHarvester
+#python3 -m pip install -r requirements.txt
+#sudo ln -s $(pwd)/theHarvester.py /usr/local/bin/theHarvester
 
 
 
@@ -61,7 +68,6 @@ def main():
         print(result.stdout)
         f.write(result.stdout)
 
-
     # 2. Subdomain enum: subfinder
     run(f"subfinder -d {domain}  -o {output_dir}/subdomains.txt", "Subdomain Enumeration (Subfinder)")
 
@@ -71,27 +77,50 @@ def main():
     # 4. Nmap full scan
     run(f"nmap -sC -sV -T4 -A -p- {domain} -oN {output_dir}/nmap.txt", "Full Port and Service Scan (Nmap)")
 
-    # 5. Ncat banner grab on common ports
-    common_ports = [21, 22, 25, 80, 110, 143, 443, 3306, 8080]
-    for port in common_ports:
-        run(f"echo '' | ncat {domain} {port} -w 3", f"Ncat Banner Grab on Port {port}")
+    # 5. ✅ Ncat banner grab on common ports (save to file)
+    ncat_output_path = os.path.join(output_dir, "ncat_results.txt")
+    with open(ncat_output_path, "w") as f:
+        common_ports = [21, 22, 25, 80, 110, 143, 443, 3306, 8080]
+        for port in common_ports:
+            desc = f"Ncat Banner Grab on Port {port}"
+            print(f"\n[+] {desc}\n{'='*60}")
+            result = subprocess.run(f"echo '' | ncat {domain} {port} -w 3",
+                                     shell=True, capture_output=True, text=True)
 
-    # 6. Gobuster (faster than dirb)
-    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 -b 403", "Directory Brute-Force (Gobuster)")
+            output = result.stdout.strip()
+            error = result.stderr.strip()
 
-    # 7. Nuclei vuln scan
+            # Print to console
+            if output:
+                print(output)
+            if error and "Ncat: TIMEOUT." not in error:
+                print(f"[!] Error:\n{error}")
+
+            # Save to file
+            f.write(f"----- {desc} -----\n")
+            if output:
+                f.write(output + "\n")
+            if error:
+                f.write(f"[Error] {error}\n")
+            f.write("\n")
+
+    # 6. Gobuster
+    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 --exclude-length 46168", "Directory Brute-Force (Gobuster)")
+
+    # 7. Nuclei
     run(f"nuclei -u {target} -severity high,critical -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
 
-    # 8. SQLMap auto SQL injection scan
+    # 8. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3 --output-dir={output_dir}/sqlmap", "SQL Injection Discovery (SQLMap)")
 
-    # 9. WPScan (if WordPress is used)
-    run(f"wpscan --url {target} --enumerate u,vp,vt --api-token [YOURAPITOKEN] -f json -o {output_dir}/wpscan.json", "WordPress Vulnerability Scan (WPScan)")
+    # 9. WPScan
+    run(f"wpscan --url {target} --enumerate u,vp,vt --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw -f json -o {output_dir}/wpscan.json", "WordPress Vulnerability Scan (WPScan)")
 
-    # 10. WhatWeb tech fingerprinting
+    # 10. WhatWeb
     run(f"whatweb {target} --log-verbose={output_dir}/whatweb.txt", "Web Fingerprinting (WhatWeb)")
 
     print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
+
 
 if __name__ == "__main__":
     main()
