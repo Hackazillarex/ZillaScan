@@ -11,12 +11,13 @@
 import sys
 import subprocess
 import os
+import re
 from urllib.parse import urlparse
 
 def banner():
     print(r"""
 __________.__.__  .__           _________                     
-\____    /|__|  | |  | _____   /   _____/ ____ _____    ____  
+\____    /|__|  |  | _____   /   _____/ ____ _____    ____  
   /     / |  |  | |  | \__  \  \_____  \_/ ___\\__  \  /    \ 
  /     /_ |  |  |_|  |__/ __ \_/        \  \___ / __ \|   |  \
 /_______ \|__|____/____(____  /_______  /\___  >____  /___|  /
@@ -30,10 +31,10 @@ __________.__.__  .__           _________
 def run(cmd, desc, outfile=None):
     """
     Runs a shell command, prints output to console, and optionally saves to a file.
-    Captures both stdout and stderr.
+    Captures both stdout and stderr, ignoring decode errors.
     """
     print(f"\n[+] {desc}\n{'='*60}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, errors='ignore')
     
     output = result.stdout.strip()
     error = result.stderr.strip()
@@ -54,9 +55,32 @@ def extract_domain(url):
     parsed = urlparse(url)
     return parsed.netloc or parsed.path
 
+def clean_subdomains(file_path):
+    """
+    Reads a file, extracts valid subdomains, removes duplicates,
+    and overwrites the file with cleaned output.
+    """
+    valid_subdomain_regex = re.compile(
+        r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$"
+    )
+
+    cleaned = set()
+    with open(file_path, "r", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if valid_subdomain_regex.match(line):
+                cleaned.add(line.lower())
+
+    # Overwrite the file with cleaned output
+    with open(file_path, "w") as f:
+        for sub in sorted(cleaned):
+            f.write(sub + "\n")
+
+    print(f"[+] Cleaned subdomains saved: {file_path}")
+
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python3 zillascan.py https://target.com")
+        print("Usage: python3 ZillaScan.py https://target.com")
         sys.exit(1)
 
     banner()
@@ -69,14 +93,43 @@ def main():
     run(f"dig {domain} any @8.8.8.8", "DNS Records (dig)", outfile=f"{output_dir}/dig.txt")
 
     # 2. Subdomain enum: subfinder
+    subfinder_file = f"{output_dir}/subdomains.txt"
     run(f"subfinder -d {domain} -silent", 
         "Subdomain Enumeration (Subfinder)", 
-        outfile=f"{output_dir}/subdomains.txt")
+        outfile=subfinder_file)
+    clean_subdomains(subfinder_file)
 
-    # 3. theHarvester
+    # 3. theHarvester (split hosts and emails)
+    harvester_raw_file = f"{output_dir}/harvester.txt"
     run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun", 
         "Email/Host Recon (theHarvester)", 
-        outfile=f"{output_dir}/harvester.txt")
+        outfile=harvester_raw_file)
+
+    harvester_hosts_file = f"{output_dir}/harvester_hosts.txt"
+    harvester_emails_file = f"{output_dir}/harvester_emails.txt"
+
+    hosts = set()
+    emails = set()
+
+    with open(harvester_raw_file, "r", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if re.match(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$", line):
+                hosts.add(line.lower())
+            elif "@" in line:
+                emails.add(line.lower())
+
+    # Save hosts
+    with open(harvester_hosts_file, "w") as f:
+        for h in sorted(hosts):
+            f.write(h + "\n")
+    # Save emails
+    with open(harvester_emails_file, "w") as f:
+        for e in sorted(emails):
+            f.write(e + "\n")
+
+    print(f"[+] Hosts saved: {harvester_hosts_file}")
+    print(f"[+] Emails saved: {harvester_emails_file}")
 
     # 4. Nmap full scan
     run(f"nmap -sC -sV -T4 -A -p- {domain}", 
@@ -91,28 +144,25 @@ def main():
             outfile=f"{output_dir}/ncat_{port}.txt")
             
     # 6. FFUF - Subdomain Fuzzing
-    ffuf_wordlist = "/usr/share/wordlists/dirb/common.txt"  # better for subdomains
-    ffuf_output_raw = f"{output_dir}/ffuf_subdomains_raw.txt"
-    ffuf_output_clean = f"{output_dir}/ffuf_subdomains.txt"
-
-    # Run FFUF
-    ffuf_cmd = f"ffuf -u http://FUZZ.{domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_output_raw} -of json"
+    ffuf_file = f"{output_dir}/ffuf_subdomains.txt"
+    ffuf_wordlist = "/usr/share/wordlists/dirb/common.txt"
+    ffuf_cmd = f"ffuf -u http://FUZZ.{domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_file} -of json"
     run(ffuf_cmd, "Subdomain Fuzzing (FFUF)")
-
-    # Clean FFUF output to only valid subdomains
-    clean_cmd = f"jq -r '.results[].url' {ffuf_output_raw} | awk -F/ '{{print $3}}' | sort -u > {ffuf_output_clean}"
-    run(clean_cmd, "Cleaning FFUF Output to Valid Subdomains")
-
+    clean_subdomains(ffuf_file)
 
     # 7. Gobuster
-    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -t 40 -b 404,403", 
-        "Directory Brute-Force (Gobuster)", 
-        outfile=f"{output_dir}/gobuster.txt")
+    run(
+        f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -t 40 -b 404,403",
+        "Directory Brute-Force (Gobuster)",
+        outfile=f"{output_dir}/gobuster.txt"
+    )
 
     # 8. Nuclei
-    run(f"nuclei -u {target} -severity high,critical -v", 
-        "Vulnerability Scan (Nuclei)", 
-        outfile=f"{output_dir}/nuclei.txt")
+    run(
+        f"nuclei -u {target} -severity high,critical -v",
+        "Vulnerability Scan (Nuclei)",
+        outfile=f"{output_dir}/nuclei.txt"
+    )
 
     # 9. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3", 
@@ -120,7 +170,7 @@ def main():
         outfile=f"{output_dir}/sqlmap.txt")
 
     # 10. WPScan
-    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token [YOUR WP SCAN API TOKEN]", 
+    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw", 
         "WordPress Vulnerability Scan (WPScan)", 
         outfile=f"{output_dir}/wpscan.txt")
 
