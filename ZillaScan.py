@@ -8,8 +8,6 @@
 #python3 -m pip install -r requirements.txt
 #sudo ln -s $(pwd)/theHarvester.py /usr/local/bin/theHarvester
 
-
-
 import sys
 import subprocess
 import os
@@ -29,22 +27,28 @@ __________.__.__  .__           _________
 
     """)
 
-# Improved runner with cleaner output
-def run(cmd, desc):
+def run(cmd, desc, outfile=None):
+    """
+    Runs a shell command, prints output to console, and optionally saves to a file.
+    Captures both stdout and stderr.
+    """
     print(f"\n[+] {desc}\n{'='*60}")
-    result = subprocess.run(cmd, shell=True, capture_output=True)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     
-    output = result.stdout.decode('utf-8', errors='replace').strip()
+    output = result.stdout.strip()
+    error = result.stderr.strip()
+    
     if output:
         print(output)
-
-    error = result.stderr.decode('utf-8', errors='replace').strip()
-    
-    # Don't treat subfinder's normal logs as an error
-    if "subfinder" not in cmd and error and "Ncat: TIMEOUT." not in error:
+    if error:
         print(f"[!] Error:\n{error}")
-    elif "subfinder" in cmd and error:
-        print(error)  # Just print subfinder logs normally
+    
+    if outfile:
+        with open(outfile, "w") as f:
+            if output:
+                f.write(output + "\n")
+            if error:
+                f.write("[Error]\n" + error + "\n")
 
 def extract_domain(url):
     parsed = urlparse(url)
@@ -61,69 +65,71 @@ def main():
     output_dir = f"output_{domain}"
     os.makedirs(output_dir, exist_ok=True)
 
-    # ✅ FIXED: Dig output inside main(), using correct DNS server
-    print(f"\n[+] DNS Records (dig)\n{'='*60}")
-    with open(f"{output_dir}/dig.txt", "w") as f:
-        result = subprocess.run(f"dig {domain} any @8.8.8.8", shell=True, capture_output=True, text=True)
-        print(result.stdout)
-        f.write(result.stdout)
+    # 1. DNS Records
+    run(f"dig {domain} any @8.8.8.8", "DNS Records (dig)", outfile=f"{output_dir}/dig.txt")
 
     # 2. Subdomain enum: subfinder
-    run(f"subfinder -d {domain} -silent -o {output_dir}/subdomains.txt 2>&1", "Subdomain Enumeration (Subfinder)")
+    run(f"subfinder -d {domain} -silent", 
+        "Subdomain Enumeration (Subfinder)", 
+        outfile=f"{output_dir}/subdomains.txt")
 
     # 3. theHarvester
-    run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun -f {output_dir}/harvester.html", "Email/Host Recon (theHarvester)")
+    run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun", 
+        "Email/Host Recon (theHarvester)", 
+        outfile=f"{output_dir}/harvester.txt")
 
     # 4. Nmap full scan
-    run(f"nmap -sC -sV -T4 -A -p- {domain} -oN {output_dir}/nmap.txt", "Full Port and Service Scan (Nmap)")
+    run(f"nmap -sC -sV -T4 -A -p- {domain}", 
+        "Full Port and Service Scan (Nmap)", 
+        outfile=f"{output_dir}/nmap.txt")
 
-    # 5. ✅ Ncat banner grab on common ports (save to file)
-    ncat_output_path = os.path.join(output_dir, "ncat_results.txt")
-    with open(ncat_output_path, "w") as f:
-        common_ports = [21, 22, 25, 80, 110, 143, 443, 3306, 8080]
-        for port in common_ports:
-            desc = f"Ncat Banner Grab on Port {port}"
-            print(f"\n[+] {desc}\n{'='*60}")
-            result = subprocess.run(f"echo '' | ncat {domain} {port} -w 3",
-                                     shell=True, capture_output=True, text=True)
+    # 5. Ncat banner grab on common ports
+    common_ports = [21, 22, 25, 80, 110, 143, 443, 3306, 8080]
+    for port in common_ports:
+        run(f"echo '' | ncat {domain} {port} -w 3", 
+            f"Ncat Banner Grab on Port {port}", 
+            outfile=f"{output_dir}/ncat_{port}.txt")
+            
+    # 6. FFUF - Subdomain Fuzzing
+    ffuf_wordlist = "/usr/share/wordlists/dirb/common.txt"  # better for subdomains
+    ffuf_output_raw = f"{output_dir}/ffuf_subdomains_raw.txt"
+    ffuf_output_clean = f"{output_dir}/ffuf_subdomains.txt"
 
-            output = result.stdout.strip()
-            error = result.stderr.strip()
+    # Run FFUF
+    ffuf_cmd = f"ffuf -u http://FUZZ.{domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_output_raw} -of json"
+    run(ffuf_cmd, "Subdomain Fuzzing (FFUF)")
 
-            # Print to console
-            if output:
-                print(output)
-            if error and "Ncat: TIMEOUT." not in error:
-                print(f"[!] Error:\n{error}")
+    # Clean FFUF output to only valid subdomains
+    clean_cmd = f"jq -r '.results[].url' {ffuf_output_raw} | awk -F/ '{{print $3}}' | sort -u > {ffuf_output_clean}"
+    run(clean_cmd, "Cleaning FFUF Output to Valid Subdomains")
 
-            # Save to file
-            f.write(f"----- {desc} -----\n")
-            if output:
-                f.write(output + "\n")
-            if error:
-                f.write(f"[Error] {error}\n")
-            f.write("\n")
 
-    # 6. Gobuster
-    run(
-    f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 -b 404,403",
-    "Directory Brute-Force (Gobuster)"
-)
+    # 7. Gobuster
+    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -t 40 -b 404,403", 
+        "Directory Brute-Force (Gobuster)", 
+        outfile=f"{output_dir}/gobuster.txt")
 
-    # 7. Nuclei
-    run(f"nuclei -u {target} -severity high,critical -v -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
+    # 8. Nuclei
+    run(f"nuclei -u {target} -severity high,critical -v", 
+        "Vulnerability Scan (Nuclei)", 
+        outfile=f"{output_dir}/nuclei.txt")
 
-    # 8. SQLMap
-    run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3 --output-dir={output_dir}/sqlmap", "SQL Injection Discovery (SQLMap)")
+    # 9. SQLMap
+    run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3", 
+        "SQL Injection Discovery (SQLMap)", 
+        outfile=f"{output_dir}/sqlmap.txt")
 
-    # 9. WPScan
-    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw -o {output_dir}/wpscan.txt", "WordPress Vulnerability Scan (WPScan)")
+    # 10. WPScan
+    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw", 
+        "WordPress Vulnerability Scan (WPScan)", 
+        outfile=f"{output_dir}/wpscan.txt")
 
-    # 10. WhatWeb
-    run(f"whatweb {target} --log-verbose={output_dir}/whatweb.txt", "Web Fingerprinting (WhatWeb)")
-
+    # 11. WhatWeb
+    run(f"whatweb {target}", 
+        "Web Fingerprinting (WhatWeb)", 
+        outfile=f"{output_dir}/whatweb.txt")
+        
     print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
-
 
 if __name__ == "__main__":
     main()
