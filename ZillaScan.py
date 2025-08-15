@@ -151,7 +151,7 @@ def main():
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3", "SQL Injection Discovery (SQLMap)", outfile=f"{output_dir}/sqlmap.txt")
 
     # 10. WPScan
-    run(f"wpscan --url {target} --enumerate u,vt,ap,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw", "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
+    run(f"wpscan --url {target} --enumerate u,vt,vp,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw", "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
 
     # 11. WhatWeb
     run(f"whatweb {target}", "Web Fingerprinting (WhatWeb)", outfile=f"{output_dir}/whatweb.txt")
