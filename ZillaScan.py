@@ -69,7 +69,7 @@ def main():
         f.write(result.stdout)
 
     # 2. Subdomain enum: subfinder
-    run(f"subfinder -d {domain}  -o {output_dir}/subdomains.txt", "Subdomain Enumeration (Subfinder)")
+    run(f"subfinder -d {domain} -silent -o {output_dir}/subdomains.txt 2>&1", "Subdomain Enumeration (Subfinder)")
 
     # 3. theHarvester
     run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun -f {output_dir}/harvester.html", "Email/Host Recon (theHarvester)")
@@ -105,7 +105,7 @@ def main():
             f.write("\n")
 
     # 6. Gobuster
-    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 --exclude-length 46168", "Directory Brute-Force (Gobuster)")
+    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 -b 404,403  "Directory Brute-Force (Gobuster)")
 
     # 7. Nuclei
     run(f"nuclei -u {target} -severity high,critical -vv -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
@@ -114,7 +114,7 @@ def main():
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3 --output-dir={output_dir}/sqlmap", "SQL Injection Discovery (SQLMap)")
 
     # 9. WPScan
-    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token [WORDPRESS TOKEN] -o {output_dir}/wpscan.txt", "WordPress Vulnerability Scan (WPScan)")
+    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw -o {output_dir}/wpscan.txt", "WordPress Vulnerability Scan (WPScan)")
 
     # 10. WhatWeb
     run(f"whatweb {target} --log-verbose={output_dir}/whatweb.txt", "Web Fingerprinting (WhatWeb)")
