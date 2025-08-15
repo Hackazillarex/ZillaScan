@@ -111,7 +111,7 @@ def main():
 )
 
     # 7. Nuclei
-    run(f"nuclei -u {target} -severity high,critical -vv -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
+    run(f"nuclei -u {target} -severity high,critical -v -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
 
     # 8. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3 --output-dir={output_dir}/sqlmap", "SQL Injection Discovery (SQLMap)")
