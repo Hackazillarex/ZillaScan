@@ -120,7 +120,7 @@ def main():
         outfile=f"{output_dir}/sqlmap.txt")
 
     # 10. WPScan
-    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw", 
+    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token [YOUR WP SCAN API TOKEN]", 
         "WordPress Vulnerability Scan (WPScan)", 
         outfile=f"{output_dir}/wpscan.txt")
 
