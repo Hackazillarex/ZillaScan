@@ -108,13 +108,13 @@ def main():
     run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 --exclude-length 46168", "Directory Brute-Force (Gobuster)")
 
     # 7. Nuclei
-    run(f"nuclei -u {target} -severity high,critical -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
+    run(f"nuclei -u {target} -severity high,critical -vv -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
 
     # 8. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3 --output-dir={output_dir}/sqlmap", "SQL Injection Discovery (SQLMap)")
 
     # 9. WPScan
-    run(f"wpscan --url {target} --enumerate u,vp,vt --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw -f json -o {output_dir}/wpscan.json", "WordPress Vulnerability Scan (WPScan)")
+    run(f"wpscan --url {target} --enumerate u,vp,vt,ap,at,tt,cb,dbe --random-user-agent --api-token [WORDPRESS TOKEN] -o {output_dir}/wpscan.txt", "WordPress Vulnerability Scan (WPScan)")
 
     # 10. WhatWeb
     run(f"whatweb {target} --log-verbose={output_dir}/whatweb.txt", "Web Fingerprinting (WhatWeb)")
