@@ -105,7 +105,10 @@ def main():
             f.write("\n")
 
     # 6. Gobuster
-    run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 -b 404,403  "Directory Brute-Force (Gobuster)")
+    run(
+    f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -o {output_dir}/gobuster.txt -t 40 -b 404,403",
+    "Directory Brute-Force (Gobuster)"
+)
 
     # 7. Nuclei
     run(f"nuclei -u {target} -severity high,critical -vv -o {output_dir}/nuclei.txt", "Vulnerability Scan (Nuclei)")
