@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 # 2. Make sure PASSWORD_WORDLIST points to a valid password list, e.g. /usr/share/wordlists/rockyou.txt
 # 3. WPScan will attempt login attacks against enumerated usernames.
 
-ENABLE_WPSCAN_BRUTEFORCE = True # <-- Change to False to disable brute-force
+ENABLE_WPSCAN_BRUTEFORCE = False # <-- Change to False to disable brute-force
 PASSWORD_WORDLIST = "/usr/share/wordlists/rockyou.txt"
 
 def banner():
@@ -168,17 +168,17 @@ def main():
     # 9. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3", "SQL Injection Discovery (SQLMap)", outfile=f"{output_dir}/sqlmap.txt")
 
-    # 10. WPScan (enumeration)
+    # 10. WhatWeb
+    run(f"whatweb {target}", "Web Fingerprinting (WhatWeb)", outfile=f"{output_dir}/whatweb.txt")
+    
+    # 11. WPScan (enumeration)
     wpscan_users_file = f"{output_dir}/wpscan_users.txt"
     run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw",
-        "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
+        "WordPress Vulnerability Scan - Long Scan, it isnt frozen. Around 1 hour (WPScan)", outfile=f"{output_dir}/wpscan.txt")
 
     # Optional WPScan brute-force (only runs if ENABLE_WPSCAN_BRUTEFORCE = True)
     if ENABLE_WPSCAN_BRUTEFORCE:
-        wpscan_bruteforce(target, output_dir, wpscan_users_file, PASSWORD_WORDLIST)
-
-    # 11. WhatWeb
-    run(f"whatweb {target}", "Web Fingerprinting (WhatWeb)", outfile=f"{output_dir}/whatweb.txt")
+        wpscan_bruteforce(target, output_dir, wpscan_users_file, PASSWORD_WORDLIST)    
 
     print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
 
