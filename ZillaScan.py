@@ -22,6 +22,7 @@ __________.__.__  .__           _________
 
         Auto Pentesting Script
       Created by Hackazillarex 🐉
+       Hackazillarex@gmail.com
 
     """)
 
