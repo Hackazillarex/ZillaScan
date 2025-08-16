@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-#sudo apt install nmap ncat dirb sqlmap -y
-#go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
-#gem install wpscan
-#sudo apt remove theharvester -y
-#git clone https://github.com/laramies/theHarvester.git
-#cd theHarvester
-#python3 -m pip install -r requirements.txt
-#sudo ln -s $(pwd)/theHarvester.py /usr/local/bin/theHarvester
-
 import sys
 import subprocess
 import os
@@ -17,9 +8,7 @@ from urllib.parse import urlparse
 
 # ---------------- WPScan Brute-Force ----------------
 # WARNING: Only run this against targets you have explicit permission to test.
-# Unauthorized brute-forcing is illegal and can get you in serious trouble.
 
-ENABLE_WPSCAN_BRUTEFORCE = False  # Will be set at runtime by user input
 PASSWORD_WORDLIST = "/usr/share/wordlists/rockyou.txt"
 
 def banner():
@@ -36,36 +25,24 @@ __________.__.__  .__           _________
 
     """)
 
-def run(cmd, desc, outfile=None):
-    """Run command and capture output (quiet mode)."""
+def run(cmd, desc, outfile=None, live_output=True):
     print(f"\n[+] {desc}\n{'='*60}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, errors='ignore')
-    output = result.stdout.strip()
-    error = result.stderr.strip()
-
-    if output:
+    if live_output:
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        output_lines = []
+        for line in process.stdout:
+            print(line, end="")
+            output_lines.append(line)
+        process.wait()
+        output = "".join(output_lines)
+    else:
+        result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+        output = result.stdout + result.stderr
         print(output)
-    if error:
-        print(f"[!] Error:\n{error}")
 
     if outfile:
         with open(outfile, "w", errors="ignore") as f:
-            if output:
-                f.write(output + "\n")
-            if error:
-                f.write("[Error]\n" + error + "\n")
-
-def run_live(cmd, desc, outfile=None):
-    """Run command and stream output live (good for WPScan)."""
-    print(f"\n[+] {desc}\n{'='*60}")
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-
-    with open(outfile, "w", errors="ignore") if outfile else open(os.devnull, "w") as f:
-        for line in process.stdout:
-            print(line, end="")  # live output
-            f.write(line)
-
-    process.wait()
+            f.write(output)
 
 def extract_domain(url):
     parsed = urlparse(url)
@@ -101,33 +78,33 @@ def extract_ffuf_subdomains(json_file, output_file):
         print(f"[!] FFUF parsing failed: {e}")
 
 def wpscan_bruteforce(target, output_dir, users_file, password_file):
-    # Brute-force WPScan using enumerated usernames (live progress)
     output_file = f"{output_dir}/wpscan_bruteforce.txt"
-    cmd = f"wpscan --url {target} --passwords {password_file} --usernames {users_file} --random-user-agent --api-token YOUR_API_KEY"
-    run_live(cmd, "WPScan Brute-Force (Users + Passwords)", outfile=output_file)
+    cmd = f"wpscan --url {target} --usernames {users_file} --passwords {password_file} --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
+    run(cmd, "WPScan Brute-Force Attack", outfile=output_file, live_output=True)
+    print(f"[+] WPScan brute-force output saved to: {output_file}")
 
 def main():
-    global ENABLE_WPSCAN_BRUTEFORCE  # so we can modify the global flag
-
     if len(sys.argv) != 2:
         print("Usage: python3 ZillaScan.py https://target.com")
         sys.exit(1)
 
     banner()
-
-    # Ask user about brute-force before anything else
-    choice = input("Do you want to enable WPScan brute-force? (y/N): ").strip().lower()
-    if choice == "y":
-        ENABLE_WPSCAN_BRUTEFORCE = True
-        print("[+] WPScan brute-force ENABLED")
-    else:
-        ENABLE_WPSCAN_BRUTEFORCE = False
-        print("[+] WPScan brute-force DISABLED")
-
     target = sys.argv[1]
     domain = extract_domain(target)
     output_dir = f"output_{domain}"
     os.makedirs(output_dir, exist_ok=True)
+
+    # Ask user about WPScan brute-force
+    while True:
+        bf_choice = input("Do you want to enable WPScan brute-force? [y/N]: ").strip().lower()
+        if bf_choice in ["y", "yes"]:
+            ENABLE_WPSCAN_BRUTEFORCE = True
+            break
+        elif bf_choice in ["n", "no", ""]:
+            ENABLE_WPSCAN_BRUTEFORCE = False
+            break
+        else:
+            print("Please answer 'y' or 'n'.")
 
     # 1. DNS Records
     run(f"dig {domain} any @8.8.8.8", "DNS Records (dig)", outfile=f"{output_dir}/dig.txt")
@@ -144,8 +121,7 @@ def main():
     harvester_hosts_file = f"{output_dir}/harvester_hosts.txt"
     harvester_emails_file = f"{output_dir}/harvester_emails.txt"
 
-    hosts = set()
-    emails = set()
+    hosts, emails = set(), set()
     with open(harvester_raw_file, "r", errors="ignore") as f:
         for line in f:
             line = line.strip()
@@ -182,26 +158,33 @@ def main():
     # 7. Gobuster
     run(f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -t 40 -b 404,403", "Directory Brute-Force (Gobuster)", outfile=f"{output_dir}/gobuster.txt")
 
-    # 8. Nuclei
-    run(f"nuclei -u {target} -severity high,critical -v", "Vulnerability Scan (Nuclei)", outfile=f"{output_dir}/nuclei.txt")
+    # 8. Nuclei (live + filtered output)
+    nuclei_raw_file = f"{output_dir}/nuclei_raw.txt"
+    nuclei_filtered_file = f"{output_dir}/nuclei.txt"
+    run(f"nuclei -u {target} -severity high,critical -v", "Vulnerability Scan (Nuclei)", outfile=nuclei_raw_file, live_output=True)
+
+    # Filter WRN lines
+    with open(nuclei_raw_file, "r", errors="ignore") as f_in, open(nuclei_filtered_file, "w") as f_out:
+        for line in f_in:
+            line = line.strip()
+            if line != "" and not line.startswith("WRN"):
+                f_out.write(line + "\n")
+    print(f"[+] Nuclei scan complete. Findings saved: {nuclei_filtered_file}")
 
     # 9. SQLMap
     run(f"sqlmap -u {target} --dump-all --batch --level=2 --risk=2 --crawl=3", "SQL Injection Discovery (SQLMap)", outfile=f"{output_dir}/sqlmap.txt")
 
     # 10. WhatWeb
     run(f"whatweb {target}", "Web Fingerprinting (WhatWeb)", outfile=f"{output_dir}/whatweb.txt")
-    
-    # 11. WPScan (enumeration, live output)
-    wpscan_users_file = f"{output_dir}/wpscan_users.txt"
-    run_live(
-        f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --random-user-agent --api-token YOUR_API_KEY",
-        "WordPress Vulnerability Scan (WPScan)",
-        outfile=f"{output_dir}/wpscan.txt"
-    )
 
-    # Optional WPScan brute-force (only runs if user enabled it at start)
+    # 11. WPScan (enumeration)
+    wpscan_users_file = f"{output_dir}/wpscan_users.txt"
+    run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --ignore-main-redirect --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw",
+        "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
+
+    # Optional WPScan brute-force
     if ENABLE_WPSCAN_BRUTEFORCE:
-        wpscan_bruteforce(target, output_dir, wpscan_users_file, PASSWORD_WORDLIST)    
+        wpscan_bruteforce(target, output_dir, wpscan_users_file, PASSWORD_WORDLIST)
 
     print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
 
