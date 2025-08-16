@@ -180,7 +180,7 @@ def main():
 
     # 11. WPScan (enumeration)
     wpscan_users_file = f"{output_dir}/wpscan_users.txt"
-    run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --ignore-main-redirect --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw",
+    run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --ignore-main-redirect --random-user-agent --api-token [YOUR WPSCAN API TOKEN]",
         "WordPress Vulnerability Scan (WPScan)", outfile=f"{output_dir}/wpscan.txt")
 
     # Optional WPScan brute-force
