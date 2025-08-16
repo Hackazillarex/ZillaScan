@@ -19,12 +19,7 @@ from urllib.parse import urlparse
 # WARNING: Only run this against targets you have explicit permission to test.
 # Unauthorized brute-forcing is illegal and can get you in serious trouble.
 
-# To enable brute-force attacks:
-# 1. Set ENABLE_WPSCAN_BRUTEFORCE = True
-# 2. Make sure PASSWORD_WORDLIST points to a valid password list, e.g. /usr/share/wordlists/rockyou.txt
-# 3. WPScan will attempt login attacks against enumerated usernames.
-
-ENABLE_WPSCAN_BRUTEFORCE = False # <-- Change to False to disable brute-force
+ENABLE_WPSCAN_BRUTEFORCE = False  # Will be set at runtime by user input
 PASSWORD_WORDLIST = "/usr/share/wordlists/rockyou.txt"
 
 def banner():
@@ -42,6 +37,7 @@ __________.__.__  .__           _________
     """)
 
 def run(cmd, desc, outfile=None):
+    """Run command and capture output (quiet mode)."""
     print(f"\n[+] {desc}\n{'='*60}")
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, errors='ignore')
     output = result.stdout.strip()
@@ -58,6 +54,18 @@ def run(cmd, desc, outfile=None):
                 f.write(output + "\n")
             if error:
                 f.write("[Error]\n" + error + "\n")
+
+def run_live(cmd, desc, outfile=None):
+    """Run command and stream output live (good for WPScan)."""
+    print(f"\n[+] {desc}\n{'='*60}")
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    with open(outfile, "w", errors="ignore") if outfile else open(os.devnull, "w") as f:
+        for line in process.stdout:
+            print(line, end="")  # live output
+            f.write(line)
+
+    process.wait()
 
 def extract_domain(url):
     parsed = urlparse(url)
@@ -93,17 +101,29 @@ def extract_ffuf_subdomains(json_file, output_file):
         print(f"[!] FFUF parsing failed: {e}")
 
 def wpscan_bruteforce(target, output_dir, users_file, password_file):
-    # Brute-force WPScan using enumerated usernames
+    # Brute-force WPScan using enumerated usernames (live progress)
     output_file = f"{output_dir}/wpscan_bruteforce.txt"
-    cmd = f"wpscan --url {target} --passwords {password_file} --usernames {users_file} --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
-    run(cmd, "WPScan Brute-Force (Users + Passwords)", outfile=output_file)
+    cmd = f"wpscan --url {target} --passwords {password_file} --usernames {users_file} --random-user-agent --api-token YOUR_API_KEY"
+    run_live(cmd, "WPScan Brute-Force (Users + Passwords)", outfile=output_file)
 
 def main():
+    global ENABLE_WPSCAN_BRUTEFORCE  # so we can modify the global flag
+
     if len(sys.argv) != 2:
         print("Usage: python3 ZillaScan.py https://target.com")
         sys.exit(1)
 
     banner()
+
+    # Ask user about brute-force before anything else
+    choice = input("Do you want to enable WPScan brute-force? (y/N): ").strip().lower()
+    if choice == "y":
+        ENABLE_WPSCAN_BRUTEFORCE = True
+        print("[+] WPScan brute-force ENABLED")
+    else:
+        ENABLE_WPSCAN_BRUTEFORCE = False
+        print("[+] WPScan brute-force DISABLED")
+
     target = sys.argv[1]
     domain = extract_domain(target)
     output_dir = f"output_{domain}"
@@ -171,12 +191,15 @@ def main():
     # 10. WhatWeb
     run(f"whatweb {target}", "Web Fingerprinting (WhatWeb)", outfile=f"{output_dir}/whatweb.txt")
     
-    # 11. WPScan (enumeration)
+    # 11. WPScan (enumeration, live output)
     wpscan_users_file = f"{output_dir}/wpscan_users.txt"
-    run(f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw",
-        "WordPress Vulnerability Scan - Long Scan, it isnt frozen. Around 1 hour (WPScan)", outfile=f"{output_dir}/wpscan.txt")
+    run_live(
+        f"wpscan --url {target} --enumerate u,vt,vp,tt,cb,dbe --random-user-agent --api-token YOUR_API_KEY",
+        "WordPress Vulnerability Scan (WPScan)",
+        outfile=f"{output_dir}/wpscan.txt"
+    )
 
-    # Optional WPScan brute-force (only runs if ENABLE_WPSCAN_BRUTEFORCE = True)
+    # Optional WPScan brute-force (only runs if user enabled it at start)
     if ENABLE_WPSCAN_BRUTEFORCE:
         wpscan_bruteforce(target, output_dir, wpscan_users_file, PASSWORD_WORDLIST)    
 
