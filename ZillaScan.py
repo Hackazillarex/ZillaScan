@@ -80,7 +80,7 @@ def extract_ffuf_subdomains(json_file, output_file):
 
 def wpscan_bruteforce(target, output_dir, users_file, password_file):
     output_file = f"{output_dir}/wpscan_bruteforce.txt"
-    cmd = f"wpscan --url {target} --usernames {users_file} --passwords {password_file} --random-user-agent --api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
+    cmd = f"wpscan --url {target} --usernames {users_file} --passwords {password_file} --random-user-agent --api-token [YOUR WPSCAN API TOKEN]"
     run(cmd, "WPScan Brute-Force Attack", outfile=output_file, live_output=True)
     print(f"[+] WPScan brute-force output saved to: {output_file}")
 
