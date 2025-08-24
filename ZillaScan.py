@@ -99,7 +99,7 @@ def clean_subdomains(file_path):
     Filter valid subdomains and remove duplicates.
     Regex explained:
     - ^ → start of line
-    - (?:[a-zA-Z0-9-]+\.)+ → one or more groups of letters/numbers/dashes followed by a dot
+    - (?:[a-zA-Z0-9-]+\\.)+ → one or more groups of letters/numbers/dashes followed by a dot
     - [a-zA-Z]{2,} → TLD with at least 2 letters
     - $ → end of line
     """
@@ -223,7 +223,7 @@ def run_wpscan(target, output_dir):
         f"--ignore-main-redirect "
         f"--format cli "
         f"--output {output_file} "
-        f"--api-token [YOUR WPSCAN API TOKEN"
+        f"--api-token [YOUR WPSCAN API TOKEN]"
     )
     run(cmd, "WPScan Vulnerability Scan", outfile=None, live_output=False)
 
@@ -268,8 +268,8 @@ def main():
 
     # Extract emails and hosts with regex
     hosts, emails = set(), set()
-    email_regex = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}")
-    subdomain_regex = re.compile(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
+    email_regex = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-z]{2,}")
+    subdomain_regex = re.compile(r"^(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}$")
     with open(harvester_raw_file, "r", errors="ignore") as f:
         for line in f:
             line = line.strip()
