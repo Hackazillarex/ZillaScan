@@ -15,6 +15,7 @@ TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_FILES = []
 SUMMARY_LOCK = Lock()
 REPORT_DATA = {"subdomains": set(), "directories": set(), "vulnerabilities": [], "sqlmap": {}}
+ENABLE_WPSCAN_BRUTEFORCE = False  # fully unattended
 
 # ---------------- Banner ----------------
 def banner():
@@ -24,7 +25,7 @@ __________.__.__  .__           _________
   /     / |  |  | |  | \__  \  \_____  \_/ ___\\__  \  /    \ 
  /     /_ |  |  |_|  |__/ __ \_/        \  \___ / __ \|   |  \
 /_______ \|__|____/____(____  /_______  /\___  >____  /___|  /
-        \/                  \/        \/     \/     \/     \/ 
+        \/                  \/        \/     \/     \/     \/ v1.337
 
         Auto Pentesting Script
       Created by Hackazillarex 🐉
@@ -75,6 +76,13 @@ def extract_domain(url):
     parsed = urlparse(url)
     return parsed.netloc or parsed.path
 
+def get_root_domain(url):
+    domain = extract_domain(url)
+    parts = domain.split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain
+
 def clean_subdomains(file_path):
     valid_subdomain_regex = re.compile(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     cleaned = set()
@@ -91,53 +99,47 @@ def clean_subdomains(file_path):
         OUTPUT_FILES.append(("Cleaned subdomains", file_path))
     REPORT_DATA["subdomains"].update(cleaned)
 
-def parse_ffuf_json(json_file):
+# ---------------- Tool Wrappers ----------------
+def run_ffuf(target, output_dir):
+    root_domain = get_root_domain(target)
+    ffuf_json_file = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.json"
+    ffuf_txt_file  = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.txt"
+    ffuf_wordlist  = "/usr/share/wordlists/dirb/common.txt"
+
+    cmd = f"ffuf -u http://FUZZ.{root_domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_json_file} -of json"
+    run(cmd, "Subdomain Fuzzing (FFUF)", outfile=None, live_output=False)
+
     try:
-        with open(json_file, "r", errors="ignore") as f:
+        with open(ffuf_json_file, "r", errors="ignore") as f:
             data = json.load(f)
+        subdomains = set()
         for result in data.get("results", []):
             host = result.get("host")
             if host:
-                REPORT_DATA["subdomains"].add(host.lower())
+                subdomains.add(host.lower())
+        with open(ffuf_txt_file, "w") as f:
+            for sub in sorted(subdomains):
+                f.write(sub + "\n")
+        REPORT_DATA["subdomains"].update(subdomains)
+        with SUMMARY_LOCK:
+            OUTPUT_FILES.append(("FFUF JSON Subdomains", ffuf_json_file))
+            OUTPUT_FILES.append(("FFUF TXT Subdomains", ffuf_txt_file))
     except Exception as e:
-        print(f"[!] FFUF JSON parsing failed: {e}")
-
-def parse_gobuster_output(gobuster_file):
-    try:
-        with open(gobuster_file, "r", errors="ignore") as f:
-            for line in f:
-                if line.startswith("/"):
-                    REPORT_DATA["directories"].add(line.strip())
-    except Exception as e:
-        print(f"[!] Gobuster parsing failed: {e}")
-
-def parse_wpscan_output(wpscan_file):
-    try:
-        with open(wpscan_file, "r", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if line and ("[!] " in line or "[i] " in line):
-                    REPORT_DATA["vulnerabilities"].append(line)
-    except Exception as e:
-        print(f"[!] WPScan parsing failed: {e}")
-
-# ---------------- Tool Wrappers ----------------
-def run_ffuf(target, output_dir):
-    ffuf_json_file = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.json"
-    ffuf_wordlist = "/usr/share/wordlists/dirb/common.txt"
-    cmd = f"ffuf -u http://FUZZ.{extract_domain(target)} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_json_file} -of json"
-    run(cmd, "Subdomain Fuzzing (FFUF)", outfile=None, live_output=False)
-    parse_ffuf_json(ffuf_json_file)
-    with SUMMARY_LOCK:
-        OUTPUT_FILES.append(("Subdomain Fuzzing (FFUF)", ffuf_json_file))
+        print(f"[!] FFUF parsing failed: {e}")
 
 def run_gobuster(target, output_dir):
     gobuster_file = f"{output_dir}/gobuster_{TIMESTAMP}.txt"
     cmd = f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -t 40 -b 404,403 -o {gobuster_file}"
     run(cmd, "Directory Brute-Force (Gobuster)", outfile=None, live_output=False)
-    parse_gobuster_output(gobuster_file)
-    with SUMMARY_LOCK:
-        OUTPUT_FILES.append(("Directory Brute-Force (Gobuster)", gobuster_file))
+    try:
+        with open(gobuster_file, "r", errors="ignore") as f:
+            for line in f:
+                if line.startswith("/"):
+                    REPORT_DATA["directories"].add(line.strip())
+        with SUMMARY_LOCK:
+            OUTPUT_FILES.append(("Directory Brute-Force (Gobuster)", gobuster_file))
+    except Exception as e:
+        print(f"[!] Gobuster parsing failed: {e}")
 
 def run_wpscan(target, output_dir):
     output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
@@ -146,6 +148,7 @@ def run_wpscan(target, output_dir):
         f"--enumerate u,t,p --plugins-detection mixed "
         f"--random-user-agent "
         f"--disable-tls-checks "
+        f"--ignore-main-redirect "
         f"--format cli "
         f"--output {output_file} "
         f"--api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
@@ -154,7 +157,14 @@ def run_wpscan(target, output_dir):
     if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
         with open(output_file, "w") as f:
             f.write("[i] WPScan completed: No vulnerabilities found.\n")
-    parse_wpscan_output(output_file)
+    try:
+        with open(output_file, "r", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line and ("[!] " in line or "[i] " in line):
+                    REPORT_DATA["vulnerabilities"].append(line)
+    except Exception as e:
+        print(f"[!] WPScan parsing failed: {e}")
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("WPScan Vulnerability Scan", output_file))
 
@@ -177,32 +187,26 @@ def run_whatweb(target, output_dir):
 
 # ---------------- SQLMap ----------------
 def run_sqlmap(target, output_dir):
-    enum_file = f"{output_dir}/sqlmap_enum_{TIMESTAMP}.txt"
-    enum_cmd = (
-        f"sqlmap -u {target} --batch --level=2 --risk=2 --crawl=2 "
-        f"--threads=10 --random-agent --dbs"
-    )
-    enum_output = run(enum_cmd, "SQLMap Database Enumeration", outfile=enum_file, live_output=True)
-    dbs = [line.strip() for line in enum_output.splitlines() if line.strip() and not line.startswith("Database")]
+    base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
+    os.makedirs(base_dir, exist_ok=True)
+
+    enum_cmd = f"sqlmap -u {target} --batch --level=2 --risk=2 --crawl=2 --threads=10 --random-agent --dbs --output-dir={base_dir}"
+    run(enum_cmd, "SQLMap Database Enumeration", outfile=None, live_output=True)
+
+    dbs = []
+    for root, dirs, files in os.walk(base_dir):
+        for file in files:
+            if file.endswith(".sqlite"):
+                db_name = file.replace(".sqlite", "")
+                dbs.append(db_name)
     REPORT_DATA["sqlmap"]["databases"] = dbs
-    try:
-        for db in dbs:
-            dump_file = f"{output_dir}/sqlmap_dump_{db}_{TIMESTAMP}.txt"
-            dump_cmd = (
-                f"sqlmap -u {target} --batch --level=2 --risk=2 --crawl=2 "
-                f"--threads=10 --random-agent -D {db} --dump"
-            )
-            dump_output = run(dump_cmd, f"SQLMap Dump Database: {db}", outfile=dump_file, live_output=True)
-            tables = set()
-            for line in dump_output.splitlines():
-                m = re.search(r'\[INFO\] Table: (\S+)', line)
-                if m:
-                    tables.add(m.group(1))
-            REPORT_DATA["sqlmap"][db] = sorted(tables)
-    except Exception as e:
-        print(f"[!] SQLMap dump step failed: {e}")
+
+    for db in dbs:
+        dump_file = f"{base_dir}/dump_{db}.txt"
+        dump_cmd = f"sqlmap -u {target} --batch --level=2 --risk=2 --crawl=2 --threads=10 --random-agent -D {db} --dump --output-dir={base_dir} > {dump_file}"
+        run(dump_cmd, f"SQLMap Dump Database: {db}", outfile=None, live_output=True)
         with SUMMARY_LOCK:
-            OUTPUT_FILES.append(("SQLMap dump (FAILED)", dump_file))
+            OUTPUT_FILES.append((f"SQLMap Dump: {db}", dump_file))
 
 # ---------------- Main ----------------
 def main():
@@ -216,8 +220,8 @@ def main():
     output_dir = f"output_{domain}"
     os.makedirs(output_dir, exist_ok=True)
 
-    tools = ["dig", "subfinder", "theHarvester", "nmap", "ncat", "ffuf", "gobuster",
-             "nuclei", "whatweb", "sqlmap", "wpscan"]
+    # Dependencies
+    tools = ["dig", "subfinder", "theHarvester", "nmap", "ncat", "ffuf", "gobuster", "nuclei", "whatweb", "sqlmap", "wpscan"]
     check_dependencies(tools)
 
     # ---------------- Serial tasks ----------------
@@ -225,9 +229,10 @@ def main():
     subfinder_file = f"{output_dir}/subdomains_{TIMESTAMP}.txt"
     run(f"subfinder -d {domain} -silent", "Subdomain Enumeration (Subfinder)", outfile=subfinder_file)
     clean_subdomains(subfinder_file)
+
+    # Email/host recon
     harvester_raw_file = f"{output_dir}/harvester_{TIMESTAMP}.txt"
     run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun", "Email/Host Recon (theHarvester)", outfile=harvester_raw_file)
-
     harvester_hosts_file = f"{output_dir}/harvester_hosts_{TIMESTAMP}.txt"
     harvester_emails_file = f"{output_dir}/harvester_emails_{TIMESTAMP}.txt"
     hosts, emails = set(), set()
@@ -250,54 +255,26 @@ def main():
     ])
 
     # ---------------- Parallel tasks ----------------
-    tasks = []
-    tasks.append(("Full Port and Service Scan (Nmap)", (f"nmap -sC -sV -T4 -A -p- {domain}", f"{output_dir}/nmap_{TIMESTAMP}.txt")))
-    for port in [21,22,25,80,110,143,443,3306,8080]:
-        tasks.append((f"Ncat Banner Grab Port {port}", (f"echo '' | ncat {domain} {port} -w 3", f"{output_dir}/ncat_{port}_{TIMESTAMP}.txt")))
+    tasks = [
+        ("Full Port and Service Scan (Nmap)", lambda: run(f"nmap -sC -sV -T4 -A -p- {domain}", "Full Port and Service Scan (Nmap)", f"{output_dir}/nmap_{TIMESTAMP}.txt")),
+        ("Ncat Banner Grab", lambda: [run(f"echo '' | ncat {domain} {port} -w 3", f"Ncat Banner Grab Port {port}", f"{output_dir}/ncat_{port}_{TIMESTAMP}.txt") for port in [21,22,25,80,110,143,443,3306,8080]]),
+        ("FFUF Subdomain Fuzzing", lambda: run_ffuf(target, output_dir)),
+        ("Gobuster Directory Scan", lambda: run_gobuster(target, output_dir)),
+        ("Nuclei Scan", lambda: run_nuclei_scan(target, output_dir)),
+        ("WhatWeb Fingerprinting", lambda: run_whatweb(target, output_dir)),
+        ("SQLMap Injection Scan", lambda: run_sqlmap(target, output_dir)),
+        ("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir))
+    ]
 
-    # Tool wrapper functions
-    tasks.append(("Subdomain Fuzzing (FFUF)", lambda: run_ffuf(target, output_dir)))
-    tasks.append(("Directory Brute-Force (Gobuster)", lambda: run_gobuster(target, output_dir)))
-    tasks.append(("Vulnerability Scan (Nuclei)", lambda: run_nuclei_scan(target, output_dir)))
-    tasks.append(("Web Fingerprinting (WhatWeb)", lambda: run_whatweb(target, output_dir)))
-    tasks.append(("SQLMap Injection Scan", lambda: run_sqlmap(target, output_dir)))
-    tasks.append(("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir)))
-
-    # Execute parallel tasks safely
     with ThreadPoolExecutor(max_workers=6) as executor:
-        future_to_task = {}
-        for desc, task_item in tasks:
-            if callable(task_item):
-                future = executor.submit(task_item)
-            else:
-                cmd, outfile = task_item
-                future = executor.submit(run, cmd, desc, outfile)
-            future_to_task[future] = desc
-
-        for future in as_completed(future_to_task):
-            desc = future_to_task[future]
+        futures = {executor.submit(func): name for name, func in tasks}
+        for future in as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                print(f"[!] {desc} failed: {e}")
+                print(f"[!] {futures[future]} failed: {e}")
 
-    # ---------------- Combined JSON report ----------------
-    combined_report_file = f"{output_dir}/combined_report_{TIMESTAMP}.json"
-    combined_report_data = {
-        "target": target,
-        "domain": domain,
-        "timestamp": TIMESTAMP,
-        "subdomains": sorted(REPORT_DATA["subdomains"]),
-        "directories": sorted(REPORT_DATA["directories"]),
-        "vulnerabilities": REPORT_DATA["vulnerabilities"],
-        "sqlmap": REPORT_DATA["sqlmap"]
-    }
-    with open(combined_report_file, "w") as f:
-        json.dump(combined_report_data, f, indent=4)
-    OUTPUT_FILES.append(("Combined JSON Report", combined_report_file))
-    print(f"[+] Combined JSON report saved: {combined_report_file}")
-
-    # ---------------- Master summary ----------------
+    # ---------------- Write master summary ----------------
     summary_file = f"{output_dir}/summary_{TIMESTAMP}.txt"
     with open(summary_file, "w") as f:
         f.write("==== ZillaScan Summary ====\n")
@@ -305,8 +282,15 @@ def main():
         for desc, path in OUTPUT_FILES:
             f.write(f"[{desc}] -> {path}\n")
 
+    # ---------------- JSON report ----------------
+    json_safe_data = {k: list(v) if isinstance(v, set) else v for k, v in REPORT_DATA.items()}
+    json_report_file = f"{output_dir}/report_{TIMESTAMP}.json"
+    with open(json_report_file, "w") as f:
+        json.dump(json_safe_data, f, indent=2)
+
     print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
     print(f"[+] Master summary file: {summary_file}")
+    print(f"[+] Combined JSON report: {json_report_file}")
 
 if __name__ == "__main__":
     main()
