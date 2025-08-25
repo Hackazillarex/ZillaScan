@@ -13,10 +13,10 @@ from threading import Lock
 
 # ---------------- Global Setup ----------------
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUTPUT_FILES = []  # Keep track of all files generated during the scan
-SUMMARY_LOCK = Lock()  # Thread-safe lock for writing to shared resources
+OUTPUT_FILES = []
+SUMMARY_LOCK = Lock()
 REPORT_DATA = {"subdomains": set(), "directories": set(), "vulnerabilities": [], "sqlmap": {}}
-ENABLE_WPSCAN_BRUTEFORCE = False  # WPScan brute-force is disabled by default
+ENABLE_WPSCAN_BRUTEFORCE = False
 
 # ---------------- Banner ----------------
 def banner():
@@ -33,7 +33,7 @@ __________.__.__  .__           _________
        Hackazillarex@gmail.com
     """)
 
-# ---------------- Check Dependencies ----------------
+# ---------------- Dependency Check ----------------
 def check_dependencies(tools):
     missing = [tool for tool in tools if shutil.which(tool) is None]
     if missing:
@@ -158,62 +158,26 @@ def run_whatweb(target, output_dir):
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("Web Fingerprinting (WhatWeb)", whatweb_file))
 
-# ---------------- SQLMap Function (full dump + sensitive contents) ----------------
 def run_sqlmap(target, output_dir):
     base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
     os.makedirs(base_dir, exist_ok=True)
 
-    SENSITIVE_TABLES_REGEX = r"admin|admins|user|users|account|accounts|customer|customers|employee|employees|login|logins"
-
-    # Step 1: Enumerate databases
-    enum_dbs_cmd = f"sqlmap -u {target} --batch --level=3 --risk=3 --crawl=3 --threads=10 --random-agent --dbs --output-dir={base_dir} -v 3"
+    enum_dbs_cmd = (
+        f"sqlmap -u {target} --batch --level=2 --forms --crawl=2 --risk=2 "
+        f"--threads=10 --random-agent --dbs "
+        f"--output-dir={base_dir} -v 1"
+    )
     run(enum_dbs_cmd, "SQLMap Database Enumeration", live_output=True)
 
-    # Step 2: Find databases from output-dir
     target_folder = target.replace("://", "_")
     dump_root = os.path.join(base_dir, target_folder, "dump")
     dbs = [db for db in os.listdir(dump_root) if os.path.isdir(os.path.join(dump_root, db))] if os.path.exists(dump_root) else []
     dbs = sorted(dbs)
     REPORT_DATA["sqlmap"]["databases"] = dbs
+    REPORT_DATA["sqlmap"]["tables"] = {}
+    REPORT_DATA["sqlmap"]["sensitive_tables_info"] = {}
     print(f"[+] Databases found: {dbs}")
-
-    # Step 3: Enumerate tables
-    db_tables = {}
-    sensitive_info = {}  # Store full contents of sensitive tables
-
-    total_tables = 0
-    for db in dbs:
-        db_path = os.path.join(dump_root, db)
-        tables = [f[:-4] for f in os.listdir(db_path) if f.endswith(".csv")]
-        db_tables[db] = sorted(tables)
-        total_tables += len(tables)
-    REPORT_DATA["sqlmap"]["tables"] = db_tables
-    print(f"[+] Found {total_tables} tables across all databases.")
-
-    # Step 4: Dump all tables and save sensitive tables contents
-    current_table_num = 0
-    for db, tables in db_tables.items():
-        for table in tables:
-            current_table_num += 1
-            print(f"\n[+] Processing table {current_table_num}/{total_tables}: {db}.{table}")
-
-            table_csv_path = os.path.join(dump_root, db, f"{table}.csv")
-            if os.path.exists(table_csv_path):
-                # Copy CSV to main folder as txt
-                dump_file = os.path.join(base_dir, f"dump_{db}_{table}.txt")
-                shutil.copy(table_csv_path, dump_file)
-                with SUMMARY_LOCK:
-                    OUTPUT_FILES.append((f"SQLMap Dump: {db}.{table}", dump_file))
-
-                # If table is sensitive, read full content into REPORT_DATA
-                if re.search(SENSITIVE_TABLES_REGEX, table, re.IGNORECASE):
-                    with open(table_csv_path, "r", errors="ignore") as f:
-                        content = f.read()
-                    sensitive_info[f"{db}.{table}"] = content
-                    print(f"[+] Sensitive table {db}.{table} content stored in memory.")
-
-    REPORT_DATA["sqlmap"]["sensitive_tables_info"] = sensitive_info
-    print(f"\n[+] SQLMap scan complete. All tables dumped, sensitive tables stored.")
+    print(f"\n[+] SQLMap scan complete. Databases enumerated only (faster mode).")
 
 def run_wpscan(target, output_dir):
     output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
@@ -225,7 +189,7 @@ def run_wpscan(target, output_dir):
         f"--ignore-main-redirect "
         f"--format cli "
         f"--output {output_file} "
-        f"--api-token [YOUR WPSCAN API TOKEN]"
+        f"--api-token [YOU WPSCAN API TOKEN]"
     )
     run(cmd, "WPScan Vulnerability Scan", outfile=None, live_output=False)
 
@@ -239,6 +203,53 @@ def run_wpscan(target, output_dir):
         print(f"[!] WPScan parsing failed: {e}")
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("WPScan Vulnerability Scan", output_file))
+
+# ---------------- Beginner-friendly Tool Descriptions ----------------
+TOOL_DESCRIPTIONS = {
+    "1": "FFUF: Fuzz subdomains to find hidden or unlisted subdomains for the target domain.",
+    "2": "Gobuster: Brute-force common directories and files on the target website.",
+    "3": "Nuclei: Automated vulnerability scanning of web apps, looking for known issues.",
+    "4": "WhatWeb: Fingerprints technologies and frameworks used by the website.",
+    "5": "WPScan: Checks WordPress sites for vulnerabilities, plugins, and users.",
+    "6": "Nmap: Scans ports and services to see what's open and running on the server.",
+    "7": "SQLMap: Automatically detects and enumerates SQL databases on the target."
+}
+
+# ---------------- Interactive Tool Selection ----------------
+def choose_tools():
+    print("\n[+] Choose which tools you want to run:")
+    tools = {
+        "1": "FFUF (subdomain fuzzing)",
+        "2": "Gobuster (directory brute-force)",
+        "3": "Nuclei (vulnerability scan)",
+        "4": "WhatWeb (fingerprinting)",
+        "5": "WPScan (WordPress vuln scan)",
+        "6": "Nmap (port & service scan)",
+        "7": "SQLMap (databases only)",
+        "a": "Run ALL tools"
+    }
+
+    for key, name in tools.items():
+        if key in TOOL_DESCRIPTIONS:
+            print(f"  [{key}] {name} - {TOOL_DESCRIPTIONS[key]}")
+        else:
+            print(f"  [{key}] {name}")
+
+    choice = input("\nEnter your choice (comma-separated for multiple, e.g. 1,3,5): ").strip()
+
+    if choice.lower() == "a":
+        return list(tools.keys())[:-1]
+
+    selected = [c.strip() for c in choice.split(",") if c.strip() in tools]
+    if not selected:
+        print("[!] No valid choices selected. Exiting.")
+        sys.exit(1)
+
+    print("\n[+] You selected the following tools:")
+    for s in selected:
+        if s in TOOL_DESCRIPTIONS:
+            print(f"  - {TOOL_DESCRIPTIONS[s]}")
+    return selected
 
 # ---------------- Main Execution ----------------
 def main():
@@ -255,11 +266,17 @@ def main():
     tools = ["dig", "subfinder", "theHarvester", "nmap", "ncat", "ffuf", "gobuster", "nuclei", "whatweb", "sqlmap", "wpscan"]
     check_dependencies(tools)
 
+    selected_tools = choose_tools()
+
+    # DNS lookup (always run)
     run(f"dig {domain} any @8.8.8.8", "DNS Records (dig)", outfile=f"{output_dir}/dig_{TIMESTAMP}.txt")
+
+    # Subdomain enumeration (always run)
     subfinder_file = f"{output_dir}/subdomains_{TIMESTAMP}.txt"
     run(f"subfinder -d {domain} -silent", "Subdomain Enumeration (Subfinder)", outfile=subfinder_file)
     clean_subdomains(subfinder_file)
 
+    # Email/host recon (always run)
     harvester_raw_file = f"{output_dir}/harvester_{TIMESTAMP}.txt"
     run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun",
         "Email/Host Recon (theHarvester)", outfile=harvester_raw_file)
@@ -288,16 +305,19 @@ def main():
         ("Harvester emails", harvester_emails_file)
     ])
 
-    # ---------------- Run fast tools concurrently ----------------
-    fast_tasks = [
-        ("FFUF Subdomain Fuzzing", lambda: run_ffuf(target, output_dir)),
-        ("Gobuster Directory Scan", lambda: run_gobuster(target, output_dir)),
-        ("Nuclei Scan", lambda: run_nuclei_scan(target, output_dir)),
-        ("WhatWeb Fingerprinting", lambda: run_whatweb(target, output_dir)),
-        ("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir))
-    ]
+    # ---------------- Run selected fast tools concurrently ----------------
+    fast_tasks = []
+    if "1" in selected_tools:
+        fast_tasks.append(("FFUF Subdomain Fuzzing", lambda: run_ffuf(target, output_dir)))
+    if "2" in selected_tools:
+        fast_tasks.append(("Gobuster Directory Scan", lambda: run_gobuster(target, output_dir)))
+    if "3" in selected_tools:
+        fast_tasks.append(("Nuclei Scan", lambda: run_nuclei_scan(target, output_dir)))
+    if "4" in selected_tools:
+        fast_tasks.append(("WhatWeb Fingerprinting", lambda: run_whatweb(target, output_dir)))
+    if "5" in selected_tools:
+        fast_tasks.append(("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir)))
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(func): name for name, func in fast_tasks}
         for future in as_completed(futures):
@@ -306,15 +326,17 @@ def main():
             except Exception as e:
                 print(f"[!] {futures[future]} failed: {e}")
 
-    # ---------------- Run slow tools sequentially ----------------
-    print("\n[+] Running Nmap (this may take a while)...")
-    run(f"nmap -sC -sV -T4 -A -p- {domain}",
-        "Full Port and Service Scan (Nmap)",
-        f"{output_dir}/nmap_{TIMESTAMP}.txt",
-        live_output=True)
+    # ---------------- Run slower scans sequentially ----------------
+    if "6" in selected_tools:
+        print("\n[+] Running Nmap (this may take a while)...")
+        run(f"nmap -sC -sV -T4 -A -p- {domain}",
+            "Full Port and Service Scan (Nmap)",
+            f"{output_dir}/nmap_{TIMESTAMP}.txt",
+            live_output=True)
 
-    print("\n[+] Running SQLMap (this may take a while)...")
-    run_sqlmap(target, output_dir)
+    if "7" in selected_tools:
+        print("\n[+] Running SQLMap (databases only, faster mode)...")
+        run_sqlmap(target, output_dir)
 
     # ---------------- Summary ----------------
     summary_file = f"{output_dir}/summary_{TIMESTAMP}.txt"
