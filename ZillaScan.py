@@ -163,7 +163,7 @@ def run_sqlmap(target, output_dir):
     os.makedirs(base_dir, exist_ok=True)
 
     enum_dbs_cmd = (
-        f"sqlmap -u {target} --batch --level=2 --forms --crawl=2 --risk=2 "
+        f"sqlmap -u {target} --batch --level=2 --crawl=2 --risk=2 "
         f"--threads=10 --random-agent --dbs "
         f"--output-dir={base_dir} -v 1"
     )
@@ -189,7 +189,7 @@ def run_wpscan(target, output_dir):
         f"--ignore-main-redirect "
         f"--format cli "
         f"--output {output_file} "
-        f"--api-token [YOU WPSCAN API TOKEN]"
+        f"--api-token [YOUR WPSCAN API TOKEN]"
     )
     run(cmd, "WPScan Vulnerability Scan", outfile=None, live_output=False)
 
