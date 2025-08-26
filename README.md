@@ -2,7 +2,7 @@
 ![banner](https://img.shields.io/badge/created%20by-Hackazillarex-blue?style=flat-square)
 ![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Latest Release](https://img.shields.io/github/v/release/yourusername/ZillaScan)
+![Latest Release](https://img.shields.io/github/v/release/hackazillarex/ZillaScan)
 
 > An all-in-one automated reconnaissance and vulnerability scanning script for ethical hacking and security assessments.
 
