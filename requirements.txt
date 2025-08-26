@@ -1,0 +1,3 @@
+# Python version
+python>=3.10
+openai>=1.0.0
