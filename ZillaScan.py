@@ -11,6 +11,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 from threading import Lock
 
+# ---------------- API KEYS ----------------
+# Replace these placeholders with your actual API keys,
+# or export them in your terminal for safety.
+OPENAI_API_KEY = "YOUR_OPENAI_KEY_HERE"
+WPSCAN_API_KEY = "YOUR_WPSCAN_KEY_HERE"
+
+os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+os.environ["WPSCAN_API_KEY"] = WPSCAN_API_KEY
+
+# ---- Optional GPT integration (install: pip install openai) ----
+DEFAULT_GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4o-mini")
+OPENAI_AVAILABLE = True
+try:
+    from openai import OpenAI
+except Exception:
+    OPENAI_AVAILABLE = False
+    OpenAI = None
+
 # ---------------- Global Setup ----------------
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_FILES = []
@@ -31,6 +49,8 @@ __________.__.__  .__           _________
         Auto Pentesting Script
       Created by Hackazillarex 🐉
        Hackazillarex@gmail.com
+
+[ Legal ] Run this only against targets you have explicit permission to test.
     """)
 
 # ---------------- Dependency Check ----------------
@@ -96,7 +116,7 @@ def clean_subdomains(file_path):
 # ---------------- Tool Wrappers ----------------
 def run_ffuf(target, output_dir):
     parsed = urlparse(target)
-    domain = parsed.netloc
+    domain = parsed.netloc or parsed.path
     if domain.startswith("www."):
         domain = domain[4:]
 
@@ -108,6 +128,9 @@ def run_ffuf(target, output_dir):
     run(cmd, "Subdomain Fuzzing (FFUF)", outfile=None, live_output=False)
 
     try:
+        if not os.path.exists(ffuf_json_file):
+            print(f"[!] FFUF JSON output not found: {ffuf_json_file}")
+            return
         with open(ffuf_json_file, "r", errors="ignore") as f:
             data = json.load(f)
         subdomains = set()
@@ -131,6 +154,9 @@ def run_gobuster(target, output_dir):
     run(cmd, "Directory Brute-Force (Gobuster)", outfile=None, live_output=False)
 
     try:
+        if not os.path.exists(gobuster_file):
+            print(f"[!] Gobuster output not found: {gobuster_file}")
+            return
         with open(gobuster_file, "r", errors="ignore") as f:
             for line in f:
                 if line.startswith("/"):
@@ -181,6 +207,9 @@ def run_sqlmap(target, output_dir):
 
 def run_wpscan(target, output_dir):
     output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
+    api_token = os.getenv("WPSCAN_API_KEY", "")
+    api_flag = f"--api-token {api_token}" if api_token else ""
+
     cmd = (
         f"wpscan --url {target} "
         f"--enumerate u,t,p --plugins-detection mixed "
@@ -189,22 +218,23 @@ def run_wpscan(target, output_dir):
         f"--ignore-main-redirect "
         f"--format cli "
         f"--output {output_file} "
-        f"--api-token [YOUR WPSCAN API TOKEN]"
+        f"{api_flag}"
     )
     run(cmd, "WPScan Vulnerability Scan", outfile=None, live_output=False)
 
     try:
-        with open(output_file, "r", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if line and ("[!] " in line or "[i] " in line):
-                    REPORT_DATA["vulnerabilities"].append(line)
+        if os.path.exists(output_file):
+            with open(output_file, "r", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and ("[!] " in line or "[i] " in line):
+                        REPORT_DATA["vulnerabilities"].append(line)
     except Exception as e:
         print(f"[!] WPScan parsing failed: {e}")
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("WPScan Vulnerability Scan", output_file))
 
-# ---------------- Beginner-friendly Tool Descriptions ----------------
+# ---------------- Tool Descriptions ----------------
 TOOL_DESCRIPTIONS = {
     "1": "FFUF: Fuzz subdomains to find hidden or unlisted subdomains for the target domain.",
     "2": "Gobuster: Brute-force common directories and files on the target website.",
@@ -251,6 +281,86 @@ def choose_tools():
             print(f"  - {TOOL_DESCRIPTIONS[s]}")
     return selected
 
+# ---------------- GPT Summary Builder ----------------
+def build_summary(report_data, output_dir):
+    summary = {}
+
+    subs = list(report_data.get("subdomains", []))
+    if subs:
+        summary["Subdomains"] = subs
+
+    dirs = list(report_data.get("directories", []))
+    if dirs:
+        summary["Interesting Directories"] = dirs
+
+    vulns = report_data.get("vulnerabilities", [])
+    if vulns:
+        summary["Vulnerabilities"] = vulns
+
+    sqlmap_info = report_data.get("sqlmap", {})
+    if sqlmap_info:
+        if sqlmap_info.get("databases"):
+            summary["Databases Found"] = sqlmap_info["databases"]
+        if sqlmap_info.get("tables"):
+            summary["Database Tables"] = sqlmap_info["tables"]
+
+    return summary
+
+# ---------------- GPT Recommendation Generator ----------------
+def generate_recommendations(report_data, output_dir, model=None):
+    if model is None:
+        model = DEFAULT_GPT_MODEL
+
+    if not OPENAI_AVAILABLE:
+        print("[!] OpenAI client not installed. Run: pip install openai")
+        return None
+    if not os.getenv("OPENAI_API_KEY"):
+        print("[!] OPENAI_API_KEY not set. Export your API key first.")
+        return None
+
+    structured_summary = build_summary(report_data, output_dir)
+
+    prompt = f"""
+You are a penetration testing assistant. Based on these summarized scan results,
+suggest further manual and automated testing steps.
+
+Be specific about:
+- which tools to try next,
+- what manual checks could be valuable,
+- where privilege escalation or pivoting might be possible.
+
+Return concise bullet points grouped by theme.
+Findings:
+{json.dumps(structured_summary, indent=2)}
+"""
+
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful penetration testing assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=900,
+            temperature=0.4
+        )
+
+        recs = response.choices[0].message.content
+        outfile = os.path.join(output_dir, f"recommendations_{TIMESTAMP}.txt")
+
+        with open(outfile, "w") as f:
+            f.write("==== GPT Pentest Recommendations ====\n\n")
+            f.write(recs)
+
+        print(f"[+] Recommendations saved: {outfile}")
+        with SUMMARY_LOCK:
+            OUTPUT_FILES.append(("GPT Recommendations", outfile))
+        return outfile
+    except Exception as e:
+        print(f"[!] Failed to generate recommendations: {e}")
+        return None
+
 # ---------------- Main Execution ----------------
 def main():
     if len(sys.argv) != 2:
@@ -281,31 +391,7 @@ def main():
     run(f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun",
         "Email/Host Recon (theHarvester)", outfile=harvester_raw_file)
 
-    hosts, emails = set(), set()
-    email_regex = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}")
-    subdomain_regex = re.compile(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
-    with open(harvester_raw_file, "r", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if subdomain_regex.match(line):
-                hosts.add(line.lower())
-            elif email_regex.match(line):
-                emails.add(line.lower())
-
-    harvester_hosts_file = f"{output_dir}/harvester_hosts_{TIMESTAMP}.txt"
-    harvester_emails_file = f"{output_dir}/harvester_emails_{TIMESTAMP}.txt"
-    with open(harvester_hosts_file, "w") as f:
-        for h in sorted(hosts):
-            f.write(h + "\n")
-    with open(harvester_emails_file, "w") as f:
-        for e in sorted(emails):
-            f.write(e + "\n")
-    OUTPUT_FILES.extend([
-        ("Harvester hosts", harvester_hosts_file),
-        ("Harvester emails", harvester_emails_file)
-    ])
-
-    # ---------------- Run selected fast tools concurrently ----------------
+    # Run selected fast tools concurrently
     fast_tasks = []
     if "1" in selected_tools:
         fast_tasks.append(("FFUF Subdomain Fuzzing", lambda: run_ffuf(target, output_dir)))
@@ -318,27 +404,23 @@ def main():
     if "5" in selected_tools:
         fast_tasks.append(("WPScan Vulnerability Scan", lambda: run_wpscan(target, output_dir)))
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(func): name for name, func in fast_tasks}
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"[!] {futures[future]} failed: {e}")
+    if fast_tasks:
+        with ThreadPoolExecutor(max_workers=min(5, len(fast_tasks))) as executor:
+            futures = {executor.submit(func): name for name, func in fast_tasks}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"[!] {futures[future]} failed: {e}")
 
-    # ---------------- Run slower scans sequentially ----------------
+    # Run slower scans sequentially
     if "6" in selected_tools:
-        print("\n[+] Running Nmap (this may take a while)...")
-        run(f"nmap -sC -sV -T4 -A -p- {domain}",
-            "Full Port and Service Scan (Nmap)",
-            f"{output_dir}/nmap_{TIMESTAMP}.txt",
-            live_output=True)
+        run(f"nmap -sC -sV -T4 -A -p- {domain}", "Full Port and Service Scan (Nmap)", f"{output_dir}/nmap_{TIMESTAMP}.txt", live_output=True)
 
     if "7" in selected_tools:
-        print("\n[+] Running SQLMap (databases only, faster mode)...")
         run_sqlmap(target, output_dir)
 
-    # ---------------- Summary ----------------
+    # Summary files
     summary_file = f"{output_dir}/summary_{TIMESTAMP}.txt"
     with open(summary_file, "w") as f:
         f.write("==== ZillaScan Summary ====\n")
@@ -351,9 +433,19 @@ def main():
     with open(json_report_file, "w") as f:
         json.dump(json_safe_data, f, indent=2)
 
-    print(f"\n[+] ZillaScan Complete. All output saved in: {output_dir}")
+    print(f"\n[+] ZillaScan Complete. Output saved in: {output_dir}")
     print(f"[+] Master summary file: {summary_file}")
     print(f"[+] Combined JSON report: {json_report_file}")
+
+    # GPT Recommendations
+    try:
+        choice = input("\n[?] Do you want GPT to generate pentest recommendations based on these results? (y/n): ").strip().lower()
+    except EOFError:
+        choice = "n"
+    if choice == "y":
+        generate_recommendations(REPORT_DATA, output_dir)
+    else:
+        print("[i] Skipping GPT recommendations.")
 
 if __name__ == "__main__":
     main()
