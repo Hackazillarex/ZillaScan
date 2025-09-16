@@ -20,6 +20,10 @@ WPSCAN_API_KEY = "YOUR_WPSCAN_KEY_HERE"
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 os.environ["WPSCAN_API_KEY"] = WPSCAN_API_KEY
 
+# Optional: pass extra sqlmap args via env var, e.g.:
+# export SQLMAP_EXTRA_ARGS="--data='id=1' --cookie='SESSION=abcd' --headers='X-Api: val'"
+SQLMAP_EXTRA_ARGS = os.getenv("SQLMAP_EXTRA_ARGS", "").strip()
+
 # ---- Optional GPT integration (install: pip install openai) ----
 DEFAULT_GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4o-mini")
 OPENAI_AVAILABLE = True
@@ -184,27 +188,146 @@ def run_whatweb(target, output_dir):
     with SUMMARY_LOCK:
         OUTPUT_FILES.append(("Web Fingerprinting (WhatWeb)", whatweb_file))
 
+# ---------------- SQLMap Helper & Runner ----------------
+def _parse_sqlmap_log_for_clues(log_text):
+    """
+    Parse sqlmap run log and return a dict of observations and suggestions.
+    """
+    lower = log_text.lower()
+    clues = {"found_databases": False, "found_tables_or_dump": False, "no_injection": False, "errors": [], "suggestions": []}
+
+    if "available databases" in lower or "available database(s)" in lower or re.search(r"database\(\"?s?\"\):", lower):
+        clues["found_databases"] = True
+    if re.search(r"Dumping table|fetching entries row|starting to dump", log_text, re.IGNORECASE):
+        clues["found_tables_or_dump"] = True
+    if "no injection point" in lower or "no injection point(s) found" in lower:
+        clues["no_injection"] = True
+        clues["suggestions"].append("No injection points found automatically. Try supplying explicit parameters with --data/--params or increase --level/--risk or try different --technique flags.")
+    # common connection / http issues
+    if "http error" in lower or "connection error" in lower or "ssl error" in lower or "timed out" in lower:
+        clues["errors"].append("network/http/ssl issues detected - check connectivity, proxies, or TLS options.")
+        clues["suggestions"].append("If you are behind a proxy, set HTTP_PROXY/HTTPS_PROXY or use --proxy. For TLS problems try --disable-tls-checks.")
+    if "authentication" in lower and "required" in lower:
+        clues["errors"].append("authentication required")
+        clues["suggestions"].append("Provide cookies, auth headers, or credentials (use --cookie/--headers/--auth-type/--auth-cred).")
+    if "403" in lower or "waf" in lower or "forbidden" in lower:
+        clues["errors"].append("Possible WAF or blocking")
+        clues["suggestions"].append("Try --random-agent, slower requests (--delay), tamper scripts, or route through a proxy/tor.")
+    return clues
+
 def run_sqlmap(target, output_dir):
+    """
+    Improved sqlmap runner:
+    - Non-interactive (--batch)
+    - Flush session (--flush-session)
+    - Accept extra args via SQLMAP_EXTRA_ARGS env var
+    - Save full log and parse it for common failure modes
+    - Walk output tree to find dump dirs and aggregate DB/table info
+    """
     base_dir = f"{output_dir}/sqlmap_{TIMESTAMP}"
     os.makedirs(base_dir, exist_ok=True)
 
+    # Defaults - you can override by setting SQLMAP_EXTRA_ARGS env var
+    default_flags = "--level=2 --risk=2 --threads=10 --crawl=2 --time-sec=10"
+    extra = f"{SQLMAP_EXTRA_ARGS} {default_flags}".strip()
+
+    # Build command - keep --batch and --flush-session
+    # NOTE: we avoid adding --dump automatically; user can add if they want full dumps
     enum_dbs_cmd = (
-        f"sqlmap -u {target} --batch --level=2 --crawl=2 --risk=2 "
-        f"--threads=10 --random-agent --dbs "
-        f"--output-dir={base_dir} -v 1"
+        f"sqlmap -u \"{target}\" {extra} --random-agent --tables --dbs "
+        f"--batch --flush-session --output-dir=\"{base_dir}\" -v 1"
     )
-    run(enum_dbs_cmd, "SQLMap Database Enumeration", live_output=True)
 
-    target_folder = target.replace("://", "_")
-    dump_root = os.path.join(base_dir, target_folder, "dump")
-    dbs = [db for db in os.listdir(dump_root) if os.path.isdir(os.path.join(dump_root, db))] if os.path.exists(dump_root) else []
-    dbs = sorted(dbs)
-    REPORT_DATA["sqlmap"]["databases"] = dbs
-    REPORT_DATA["sqlmap"]["tables"] = {}
-    REPORT_DATA["sqlmap"]["sensitive_tables_info"] = {}
-    print(f"[+] Databases found: {dbs}")
-    print(f"\n[+] SQLMap scan complete. Databases enumerated only (faster mode).")
+    # log file
+    sqlmap_log = os.path.join(base_dir, "sqlmap_run.log")
+    run(enum_dbs_cmd, "SQLMap Database Enumeration", outfile=sqlmap_log, live_output=True)
 
+    # read log for analysis
+    log_text = ""
+    try:
+        with open(sqlmap_log, "r", errors="ignore") as f:
+            log_text = f.read()
+    except Exception as e:
+        print(f"[!] Could not read sqlmap log: {e}")
+
+    clues = _parse_sqlmap_log_for_clues(log_text)
+    if clues["found_databases"]:
+        print("[+] sqlmap log indicates databases were discovered during the run.")
+    if clues["found_tables_or_dump"]:
+        print("[+] sqlmap log indicates table dump activity occurred.")
+
+    if clues["no_injection"]:
+        print("[!] sqlmap reported no injection points found automatically.")
+    if clues["errors"]:
+        print("[!] sqlmap reported errors/warnings: ")
+        for e in clues["errors"]:
+            print(f"    - {e}")
+    if clues["suggestions"]:
+        print("\n[!] Suggestions from sqlmap log analysis:")
+        for s in clues["suggestions"]:
+            print(f"    - {s}")
+
+    # Walk the base_dir for any 'dump' directories created by sqlmap
+    dump_locations = []
+    for root, dirs, files in os.walk(base_dir):
+        for d in dirs:
+            if d.lower() == "dump":
+                dump_locations.append(os.path.join(root, d))
+
+    databases = []
+    tables = {}
+    sensitive_info = {}
+
+    for dump_path in dump_locations:
+        try:
+            # database directories are child folders under dump_path
+            for dbname in os.listdir(dump_path):
+                dbpath = os.path.join(dump_path, dbname)
+                if os.path.isdir(dbpath):
+                    databases.append(dbname)
+                    tables[dbname] = []
+                    # for each database, list tables (each table may be a file or folder)
+                    try:
+                        for tentry in os.listdir(dbpath):
+                            tpath = os.path.join(dbpath, tentry)
+                            # sqlmap may create files like "<table>.csv" or "<table>/<column>.txt"
+                            if os.path.isdir(tpath):
+                                tables[dbname].append(tentry)
+                            else:
+                                # strip extensions
+                                name = os.path.splitext(tentry)[0]
+                                if name not in tables[dbname]:
+                                    tables[dbname].append(name)
+                            # sample sensitive checks: look for table names like users, admin, passwd
+                            if re.search(r"(user|admin|pass|cred|pwd|secret|token)", tentry, re.IGNORECASE):
+                                sensitive_info.setdefault(dbname, []).append(tentry)
+                    except Exception as e:
+                        print(f"[!] Could not list tables under {dbpath}: {e}")
+        except Exception as e:
+            print(f"[!] Error enumerating dump path {dump_path}: {e}")
+
+    databases = sorted(set(databases))
+    REPORT_DATA["sqlmap"]["databases"] = databases
+    REPORT_DATA["sqlmap"]["tables"] = tables
+    REPORT_DATA["sqlmap"]["sensitive_tables_info"] = sensitive_info
+
+    print(f"[+] sqlmap log: {sqlmap_log}")
+    if databases:
+        print(f"[+] Databases found: {databases}")
+        for db, tlist in tables.items():
+            print(f"    - {db}: {tlist}")
+    else:
+        print("[!] No database folders found under sqlmap output directory.")
+        # Provide extra tips when nothing was found
+        print("\n[!] Troubleshooting tips:")
+        print("    - If you normally run sqlmap with POST data, cookies, or auth, set SQLMAP_EXTRA_ARGS to include --data='...' or --cookie='...' (or re-run manually with those args).")
+        print("    - Try increasing --level and --risk or specifying --technique (e.g. --technique=BEUST).")
+        print("    - If the app uses a WAF, try --random-agent, add delays (--delay), or apply tamper scripts (--tamper).")
+        print("    - Inspect the sqlmap_run.log for 'No injection point(s) found' or HTTP errors.")
+        print("    - Run sqlmap manually with the exact same args the script used (check the sqlmap_run.log for the command summary printed by sqlmap).")
+    print(f"\n[+] SQLMap scan complete.")
+
+# ---------------- WPScan ----------------
 def run_wpscan(target, output_dir):
     output_file = f"{output_dir}/wpscan_report_{TIMESTAMP}.txt"
     api_token = os.getenv("WPSCAN_API_KEY", "")
