@@ -172,7 +172,7 @@ def run_gobuster(target, output_dir):
 
 def run_nuclei_scan(target, output_dir):
     output_file = f"{output_dir}/nuclei_{TIMESTAMP}.txt"
-    cmd = f"nuclei -u {target} -severity high,critical -v -o {output_file}"
+    cmd = f"nuclei -u {target} -v -o {output_file}"
     run(cmd, "Vulnerability Scan (Nuclei)", outfile=None, live_output=False)
 
     if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
@@ -228,7 +228,7 @@ def run_sqlmap(target, output_dir):
     os.makedirs(base_dir, exist_ok=True)
 
     # Defaults - you can override by setting SQLMAP_EXTRA_ARGS env var
-    default_flags = "--level=2 --risk=2 --threads=10 --crawl=2 --time-sec=10"
+    default_flags = "--flush-session --level=2 --risk=2 --threads=3 --crawl=2 --random-agent --tables --dbs --time-sec=10"
     extra = f"{SQLMAP_EXTRA_ARGS} {default_flags}".strip()
 
     # Build command - keep --batch and --flush-session
