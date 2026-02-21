@@ -38,8 +38,7 @@ TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 OUTPUT_FILES = []
 SUMMARY_LOCK = Lock()
 REPORT_DATA = {"subdomains": set(), "directories": set(), "vulnerabilities": [], "sqlmap": {}}
-ENABLE_WPSCAN_BRUTEFORCE = False
-
+ENABLE_WPSCAN_BRUTEFORCE = True
 # ---------------- Banner ----------------
 def banner():
     print(r"""
