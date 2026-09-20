@@ -13,6 +13,8 @@ here — this tool reports findings, it doesn't act on them.
 
 Only run this against domains/hosts you own or are explicitly authorized
 to test.
+
+Don't Be A SKID!
 """
 
 import sys
