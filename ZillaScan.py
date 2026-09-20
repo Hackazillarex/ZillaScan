@@ -2,7 +2,7 @@
 """
 ZillaScan — passive/active recon, fingerprinting & reporting toolkit.
 
-Scope, deliberately: this tool enumerates DNS, subdomains, open directories,
+Scope: this tool enumerates DNS, subdomains, open directories,
 open ports/services, web technology fingerprints, and known-vulnerability
 *detection* via Nuclei (signature/version matching only — rate-limited,
 non-destructive template tags by default). It does NOT contain exploitation
@@ -14,7 +14,7 @@ here — this tool reports findings, it doesn't act on them.
 Only run this against domains/hosts you own or are explicitly authorized
 to test.
 
-Don't Be A SKID!
+Don't Be A SKID!!
 """
 
 import sys
@@ -1323,7 +1323,7 @@ async def async_main(target, non_interactive_tools=None):
     # Summary + reports
     summary_file = f"{output_dir}/summary_{TIMESTAMP}.txt"
     with open(summary_file, "w") as f:
-        f.write("==== ZillaScan Recon Summary ====\n")
+        f.write("==== ZillaScan Summary ====\n")
         f.write(f"Target: {target}\nDomain: {domain}\nTimestamp: {TIMESTAMP}\n\n")
         for desc, path in OUTPUT_FILES:
             f.write(f"[{desc}] -> {path}\n")
@@ -1347,7 +1347,7 @@ async def async_main(target, non_interactive_tools=None):
               f"{len(d['new_subdomains'])} new subdomain(s), {len(d['new_findings'])} new finding(s).")
 
 def main():
-    parser = argparse.ArgumentParser(description="ZillaScan Recon — recon/fingerprinting/reporting only.")
+    parser = argparse.ArgumentParser(description="ZillaScan — recon/fingerprinting/reporting only.")
     parser.add_argument("target", help="Target URL or domain, e.g. https://example.com")
     parser.add_argument(
         "--tools",
