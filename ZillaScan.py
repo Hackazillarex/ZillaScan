@@ -2,14 +2,14 @@
 """
 ZillaScan — passive/active recon, fingerprinting & reporting toolkit.
 
-Scope: this tool enumerates DNS, subdomains, open directories,
+Scope, deliberately: this tool enumerates DNS, subdomains, open directories,
 open ports/services, web technology fingerprints, and known-vulnerability
 *detection* via Nuclei (signature/version matching only — rate-limited,
 non-destructive template tags by default). It does NOT contain exploitation
 or credential brute-forcing steps (no sqlmap, no wpscan). If recon or
 Nuclei turns up something like a WordPress install or a confirmed CVE,
 verify and remediate it yourself, separately, rather than exploiting it
-here. This tool reports findings, it doesn't act on them.
+here — this tool reports findings, it doesn't act on them.
 
 Only run this against domains/hosts you own or are explicitly authorized
 to test.
@@ -28,6 +28,7 @@ from urllib.parse import urlparse, urljoin
 import urllib.request
 import urllib.error
 import glob
+import contextlib
 import csv
 
 # ---------------- Global Setup ----------------
@@ -60,7 +61,7 @@ REPORT_DATA = {
 
 MAX_EMBED_CHARS = 20000  # cap embedded raw output per section so the HTML stays sane
 
-# Sensitive paths checked directly for accidental exposure.
+# Sensitive paths checked directly (not brute-forced) for accidental exposure.
 SENSITIVE_PATHS = [
     (".git/HEAD", "high", "Exposed .git directory can leak full source history."),
     (".git/config", "high", "Exposed .git/config can leak repo remotes/credentials."),
@@ -83,15 +84,20 @@ SECURITY_HEADERS_CHECKED = {
     "Permissions-Policy": ("info", "Not set — browser features (camera, geolocation, etc.) aren't explicitly restricted."),
 }
 
-# Nuclei tags.
-# Override with ZILLASCAN_NUCLEI_TAGS if you want a different set.
+# Nuclei tags considered detection-only / non-destructive by convention.
+# Excludes tags like "dos", "fuzz", "intrusive" that can degrade or disrupt
+# a target. Override with ZILLASCAN_NUCLEI_TAGS if you want a different set.
 DEFAULT_NUCLEI_TAGS = os.getenv(
     "ZILLASCAN_NUCLEI_TAGS", "cve,misconfig,exposure,default-login,tech,ssl,fuzz,intrusive"
 )
 DEFAULT_NUCLEI_EXCLUDE_TAGS = os.getenv("ZILLASCAN_NUCLEI_EXCLUDE_TAGS", "dos")
 DEFAULT_NUCLEI_RATE_LIMIT = os.getenv("ZILLASCAN_NUCLEI_RATE_LIMIT", "50")
+# How often (seconds) nuclei prints its own progress stats (requests sent,
+# matched, templates run) to stdout — this is real progress, not a generic
+# heartbeat, and is what actually shows a long CVE/SSL sweep isn't stalled.
+NUCLEI_STATS_INTERVAL_SEC = os.getenv("ZILLASCAN_NUCLEI_STATS_INTERVAL", "15")
 
-# Generic manual verification guidance, keyed by the Nuclei tag/category that
+# Generic manual-verification guidance, keyed by the Nuclei tag/category that
 # matched. These are methodology notes for confirming a finding is real
 # (checking versions, headers, response content).
 # A finding can match multiple categories; all matching notes are attached.
@@ -243,16 +249,24 @@ def confirm_scope(target):
 
     print(f"\n[?] You are about to scan: {target}")
     try:
-        answer = input("    Confirm you own this target or are explicitly authorized to test it. Hackazillarex is not responsible for how you use this tool. [y/N]: ").strip().lower()
+        answer = input("    Hackazillarex is not responsible for how you use this tool. Confirm you own this target or are explicitly authorized to test it [y/N]: ").strip().lower()
     except EOFError:
         answer = ""
     if answer != "y":
-        print("[!] Don't be a SKID! Exiting.")
+        print("[!] Be Gone SKID! Exiting.")
         sys.exit(1)
 
 # ---------------- Async command runner ----------------
+HEARTBEAT_INTERVAL_SEC = int(os.getenv("ZILLASCAN_HEARTBEAT_INTERVAL", "30"))
+
 async def run(cmd, desc, outfile=None, timeout=DEFAULT_TIMEOUT_SEC, live_output=True, retries=1):
-    """Run a shell command asynchronously with a timeout and optional retries."""
+    """Run a shell command asynchronously with a timeout and optional retries.
+
+    A heartbeat prints "still running" every ZILLASCAN_HEARTBEAT_INTERVAL
+    seconds (default 30) of silence, so a long-running tool with quiet output
+    (e.g. nuclei with -silent) doesn't look stalled. Set the env var to a
+    higher number to quiet it down, or "0" to disable it.
+    """
     attempt = 0
     last_output = ""
     while attempt <= retries:
@@ -265,6 +279,22 @@ async def run(cmd, desc, outfile=None, timeout=DEFAULT_TIMEOUT_SEC, live_output=
                 stderr=asyncio.subprocess.STDOUT,
             )
             chunks = []
+            start_time = asyncio.get_event_loop().time()
+            last_activity = {"t": start_time}
+
+            async def heartbeat():
+                if HEARTBEAT_INTERVAL_SEC <= 0:
+                    return
+                while True:
+                    await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
+                    now = asyncio.get_event_loop().time()
+                    idle = now - last_activity["t"]
+                    elapsed = int(now - start_time)
+                    if idle >= HEARTBEAT_INTERVAL_SEC:
+                        print(f"[*] {desc} still running... ({elapsed}s elapsed, no new output for {int(idle)}s)")
+                        last_activity["t"] = now  # avoid re-printing every inner loop tick
+
+            hb_task = asyncio.ensure_future(heartbeat())
             try:
                 async def read_stream():
                     while True:
@@ -272,6 +302,7 @@ async def run(cmd, desc, outfile=None, timeout=DEFAULT_TIMEOUT_SEC, live_output=
                         if not line:
                             break
                         decoded = line.decode("utf-8", errors="ignore")
+                        last_activity["t"] = asyncio.get_event_loop().time()
                         if live_output:
                             print(decoded, end="")
                         chunks.append(decoded)
@@ -286,6 +317,10 @@ async def run(cmd, desc, outfile=None, timeout=DEFAULT_TIMEOUT_SEC, live_output=
                 if attempt <= retries:
                     continue
                 break
+            finally:
+                hb_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await hb_task
 
             output = "".join(chunks)
             last_output = output
@@ -369,7 +404,7 @@ def add_finding(source, name, severity, matched_at, description, tags="", refere
     }
     REPORT_DATA["vulnerabilities"].append(finding)
 
-# ---------------- Tool Wrappers  ----------------
+# ---------------- Tool Wrappers ----------------
 async def run_dig(domain, output_dir):
     outfile = f"{output_dir}/dig_{TIMESTAMP}.txt"
     await run(f"dig {domain} any @8.8.8.8", "DNS Records (dig)", outfile=outfile, timeout=30)
@@ -481,7 +516,7 @@ async def run_nuclei(target, output_dir):
     Detection-only vulnerability scan. Uses signature/version-matching
     templates (CVE, misconfig, exposure, default-login, tech, ssl tags by
     default) and excludes disruptive tags (dos, fuzz, intrusive). Rate-limited.
-    This confirms findings for a report.
+    This confirms findings for a report; it does not exploit them.
     """
     json_outfile = f"{output_dir}/nuclei_{TIMESTAMP}.json"
     log_outfile = f"{output_dir}/nuclei_{TIMESTAMP}.log"
@@ -491,6 +526,7 @@ async def run_nuclei(target, output_dir):
         f"-tags {DEFAULT_NUCLEI_TAGS} -etags {DEFAULT_NUCLEI_EXCLUDE_TAGS} "
         f"-rate-limit {DEFAULT_NUCLEI_RATE_LIMIT} "
         f"-jsonl -o {json_outfile} "
+        f"-stats -stats-interval {NUCLEI_STATS_INTERVAL_SEC} "
         f"-silent"
     )
     await run(cmd, "Vulnerability Detection (Nuclei)", outfile=log_outfile, timeout=900, live_output=True)
@@ -847,7 +883,7 @@ def choose_tools():
         "3": "WhatWeb (fingerprinting)",
         "4": "Nmap - top 1000 ports",
         "5": "Nmap - full port sweep",
-        "6": "Nuclei - vulnerability detection (no exploitation)",
+        "6": "Nuclei - vulnerability detection",
         "7": "httpx - live host probing",
         "8": "gowitness - screenshots",
         "9": "gau - historical URLs",
