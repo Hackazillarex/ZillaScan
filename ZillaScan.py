@@ -90,9 +90,9 @@ SECURITY_HEADERS_CHECKED = {
 # Excludes tags like "dos", "fuzz", "intrusive" that can degrade or disrupt
 # a target. Override with ZILLASCAN_NUCLEI_TAGS if you want a different set.
 DEFAULT_NUCLEI_TAGS = os.getenv(
-    "ZILLASCAN_NUCLEI_TAGS", "cve,misconfig,exposure,default-login,tech,ssl,fuzz,intrusive"
+    "ZILLASCAN_NUCLEI_TAGS", "cve,misconfig,exposure,default-login,tech,ssl"
 )
-DEFAULT_NUCLEI_EXCLUDE_TAGS = os.getenv("ZILLASCAN_NUCLEI_EXCLUDE_TAGS", "dos")
+DEFAULT_NUCLEI_EXCLUDE_TAGS = os.getenv("ZILLASCAN_NUCLEI_EXCLUDE_TAGS", "dos,fuzz,intrusive")
 DEFAULT_NUCLEI_RATE_LIMIT = os.getenv("ZILLASCAN_NUCLEI_RATE_LIMIT", "50")
 # How often (seconds) nuclei prints its own progress stats (requests sent,
 # matched, templates run) to stdout — this is real progress, not a generic
