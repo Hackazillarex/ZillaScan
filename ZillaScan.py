@@ -63,7 +63,7 @@ REPORT_DATA = {
 
 MAX_EMBED_CHARS = 20000  # cap embedded raw output per section so the HTML stays sane
 
-# Sensitive paths checked directly (not brute-forced) for accidental exposure.
+# Sensitive paths checked directly for accidental exposure.
 SENSITIVE_PATHS = [
     (".git/HEAD", "high", "Exposed .git directory can leak full source history."),
     (".git/config", "high", "Exposed .git/config can leak repo remotes/credentials."),
@@ -192,6 +192,10 @@ def build_follow_up_notes(template_id, tags_hint=""):
 OUTPUT_FILES = []  # list of (description, path)
 
 DEFAULT_TIMEOUT_SEC = int(os.getenv("ZILLASCAN_TIMEOUT", "600"))
+
+THEHARVESTER_SOURCES = os.getenv(
+    "ZILLASCAN_HARVESTER_SOURCES", "bing,duckduckgo,crtsh,hackertarget,threatminer,rapiddns"
+)
 DEFAULT_WORDLIST_CANDIDATES = [
     os.getenv("ZILLASCAN_WORDLIST", ""),
     "/usr/share/wordlists/dirb/common.txt",
@@ -422,7 +426,7 @@ async def run_subfinder(domain, output_dir):
 async def run_theharvester(domain, output_dir):
     outfile = f"{output_dir}/harvester_{TIMESTAMP}.txt"
     await run(
-        f"theHarvester -d {domain} -b bing,duckduckgo,yahoo,crtsh,bufferoverun",
+        f"theHarvester -d {domain} -b {THEHARVESTER_SOURCES}",
         "Email/Host Recon (theHarvester)",
         outfile=outfile,
         timeout=180,
@@ -1336,7 +1340,7 @@ async def async_main(target, non_interactive_tools=None):
     html_report_file = build_html_report(output_dir, json_report_file)
     csv_report_file = build_csv_report(output_dir)
 
-    print(f"\n[+] ZillaScan Recon complete. Output saved in: {output_dir}")
+    print(f"\n[+] ZillaScan complete. Output saved in: {output_dir}")
     print(f"[+] Master summary file: {summary_file}")
     print(f"[+] JSON report: {json_report_file}")
     print(f"[+] HTML report: {html_report_file}")
